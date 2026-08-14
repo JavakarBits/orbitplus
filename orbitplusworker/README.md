@@ -2,29 +2,27 @@
 
 `orbitplusworker` is the standalone proactive TripDetails Worker module.
 
-## Layout
-
-- `cmd/orbitplusworker`: production composition root.
-- `internal/application/worker`: direct Worker flow, configuration, result types, and dependency contracts.
-- `internal/infrastructure/bits`: authorized `BitsTripDetailsClient` source adapter.
-- `internal/infrastructure/rabbitmq`: durable manual-ack consumer and delivery adapter.
-- `internal/infrastructure/orbitplus`: existing OrbitPlus/Master destination submission adapter.
-
 ## Execution boundary
 
-The worker preserves the RabbitMQ message's existing action-specific fields, builds temporary direct Bits credentials from its operator code, and calls `BitsTripDetailsClient.FetchTripDetails` using the environment-provided `BITS_BASE_URL`. `search`, `busmap`, and `searchbusmap` GET routes retain safe escaping for every dynamic path segment. The worker passes the raw Bits response to the existing OrbitPlus-named destination contract; it does not define or fabricate a Master API.
+```text
+RabbitMQ → orbitplusworker → Bits Service → external OrbitPlus destination → RabbitMQ ACK
+```
 
-After a successful Bits response is received, the worker writes the raw response body through the existing structured `slog` approach. Source completion logs do not include credentials or the complete credential-bearing request URL. Temporary direct credential construction remains marked with a TODO for the future credential API.
+The Worker does not implement a scheduler or publisher, Master storage/query behavior, Dragonfly, a credential service, or V1 behavior.
 
-Only existing destination statuses `ACCEPTED`, `DUPLICATE`, and `STALE` invoke `RabbitMQDelivery.Ack`. `RETRYABLE`, source failures, destination failures, acknowledgement failures, and all other nonterminal outcomes remain unacknowledged for existing RabbitMQ retry, redelivery, and DLQ behavior. Manual acknowledgement, prefetch, readiness, shutdown, and context propagation are unchanged.
+Each RabbitMQ message requires `operatorCode` and `actionType`. `search` and `searchbusmap` require `fromCode`, `toCode`, and `tripDate`; `busmap` requires `tripCode`, `fromStationCode`, `toStationCode`, and `travelDate`.
 
-`WORKER_CONCURRENCY` (default `10`) caps simultaneous local fetch/submit operations in one Worker process. `RABBITMQ_PREFETCH` (default `10`) independently caps unacknowledged deliveries sent to one RabbitMQ consumer channel.
+The Worker builds temporary approved development Bits username/token values directly in Worker code from `operatorCode`, safely path-escapes every dynamic route segment, and fetches the matching action route under `BITS_BASE_URL`. After a successful fetch, it logs the raw Bits JSON and passes that raw body unchanged through the existing external OrbitPlus client. The client POSTs to `{ORBITPLUS_URL}/v1/trip-details/refreshes` in its existing `orbitResponse` field.
 
-## Environment and startup
+Credentials, credential objects, credential-bearing request URLs, passwords, headers, and secrets are never logged. Only destination outcomes `ACCEPTED`, `DUPLICATE`, and `STALE` cause `RabbitMQDelivery.Ack`. Invalid messages, Bits errors, OrbitPlus errors/retryable responses, and ACK errors remain unacknowledged for existing RabbitMQ redelivery/DLQ behavior.
 
-`APP_ENV` must be exactly `development` or `production`; it defaults to `production` when unset. Production accepts only `amqps://` RabbitMQ, `https://` Bits, and `https://` OrbitPlus URLs. Development additionally permits `amqp://` RabbitMQ and `http://` Bits and OrbitPlus URLs. URLs are supplied through configuration or environment variables—no hostname is hardcoded in Go source.
+`WORKER_CONCURRENCY` limits local fetch/submit operations in one Worker process. `RABBITMQ_PREFETCH` independently limits unacknowledged deliveries sent to a consumer channel.
 
-Start the standalone Worker from the module root with:
+## Configuration and startup
+
+The configuration policy includes `APP_ENV`, RabbitMQ settings, `BITS_BASE_URL`, `ORBITPLUS_URL`, `WORKER_CONCURRENCY`, optional `WORKER_HTTP_TIMEOUT`, and optional Health API settings. It excludes legacy `ORBIT_USERNAME`, `ORBIT_API_TOKEN`, `ORBIT_ZONE_URL`, and `WORKER_OPERATION_TIMEOUT`.
+
+Start the standalone Worker from the module root:
 
 ```powershell
 go run ./cmd/orbitplusworker
@@ -32,10 +30,4 @@ go run ./cmd/orbitplusworker
 
 `go run .` intentionally fails because the module root has no `main` package.
 
-## Verification
-
-```powershell
-gofmt -w cmd/orbitplusworker/main.go internal/application/worker/bits.go internal/application/worker/config.go internal/application/worker/orbitplus.go internal/application/worker/worker.go internal/infrastructure/bits/tripdetails_client.go internal/infrastructure/orbitplus/client.go
-go build ./...
-go vet ./...
-```
+See [proactive-worker-configuration.md](docs/proactive-worker-configuration.md) for the Worker-only configuration and route contract.
