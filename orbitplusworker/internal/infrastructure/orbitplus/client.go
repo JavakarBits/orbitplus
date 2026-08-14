@@ -68,7 +68,7 @@ func (client *OrbitPlusClient) SendTripDetails(ctx context.Context, request work
 		return "", fmt.Errorf("encode OrbitPlus request: %w", err)
 	}
 	requestURL := *client.endpoint
-	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + "/v1/trip-details/refreshes"
+	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + "/api/tripdetails"
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("build OrbitPlus request: %w", err)
@@ -91,17 +91,15 @@ func (client *OrbitPlusClient) SendTripDetails(ctx context.Context, request work
 		return "", fmt.Errorf("OrbitPlus response is invalid")
 	}
 	var result struct {
-		Status worker.OrbitPlusStatus `json:"status"`
+		Status *int `json:"status"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("decode OrbitPlus response: %w", err)
 	}
-	switch result.Status {
-	case worker.OrbitPlusAccepted, worker.OrbitPlusDuplicate, worker.OrbitPlusStale, worker.OrbitPlusRetryable:
-		return result.Status, nil
-	default:
-		return "", fmt.Errorf("OrbitPlus returned unknown outcome")
+	if result.Status == nil || *result.Status != 1 {
+		return "", fmt.Errorf("OrbitPlus returned unsuccessful status")
 	}
+	return worker.OrbitPlusAccepted, nil
 }
 
 func parseEndpoint(raw string, environment worker.AppEnvironment) (*url.URL, error) {
