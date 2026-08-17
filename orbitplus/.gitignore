@@ -1,0 +1,12 @@
+# Local runtime configuration and generated output
+.env
+/build/*
+!/build/.gitkeep
+/logs/*
+!/logs/.gitkeep
+
+# Go build and test output
+*.exe
+*.test
+*.out
+coverage.out
