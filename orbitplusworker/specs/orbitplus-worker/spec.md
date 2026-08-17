@@ -18,14 +18,14 @@ The Worker does not schedule or publish work, implement Master behavior, or stor
 
 ### User Story 1 — Process a valid refresh delivery (Priority: P1)
 
-Given an eligible RabbitMQ message, the Worker validates its action-specific fields, constructs temporary approved development Bits credentials directly in Worker code from `operatorCode`, fetches raw Bits JSON, submits that exact body through the existing external OrbitPlus client, and acknowledges only an eligible terminal response.
+Given an eligible RabbitMQ message, the Worker validates its action-specific fields, constructs temporary hardcoded development Bits credentials directly in Worker code, fetches raw Bits JSON, submits that exact body through the existing external OrbitPlus client, and acknowledges only when the destination reports a successful outcome.
 
 **Acceptance scenarios**
 
 1. Given `actionType` is `search` with valid `operatorCode`, `fromCode`, `toCode`, and `tripDate`, when processed, the Worker GETs the documented `search` route and submits the successful raw response unchanged.
 2. Given `actionType` is `busmap` with valid `operatorCode`, `tripCode`, `fromStationCode`, `toStationCode`, and `travelDate`, when processed, the Worker GETs the documented `busmap` route and submits the successful raw response unchanged.
 3. Given `actionType` is `searchbusmap` with valid `operatorCode`, `fromCode`, `toCode`, and `tripDate`, when processed, the Worker GETs the documented `searchbusmap` route and submits the successful raw response unchanged.
-4. Given the external destination reports `ACCEPTED`, `DUPLICATE`, or `STALE`, when submission completes, the Worker ACKs the delivery.
+4. Given the external destination reports `ACCEPTED`, when submission completes, the Worker ACKs the delivery.
 5. Given any other result, when processing ends, the Worker leaves the delivery unacknowledged.
 
 ### User Story 2 — Preserve safe delivery behavior (Priority: P1)
@@ -43,11 +43,11 @@ The Worker validates messages before calling Bits; raw Bits JSON is logged only 
 - **FR-001**: A message MUST contain `operatorCode` and `actionType`.
 - **FR-002**: `search` and `searchbusmap` messages MUST also contain `fromCode`, `toCode`, and `tripDate`.
 - **FR-003**: `busmap` messages MUST also contain `tripCode`, `fromStationCode`, `toStationCode`, and `travelDate`.
-- **FR-004**: The Worker MUST construct the temporary approved development username and token directly from the message operator code. No credential-service API, client, or contract is specified.
+- **FR-004**: The Worker MUST use temporary hardcoded development constants for the Bits username and API token. The `operatorCode` from the message is used as the operator path segment and is validated, but it does not derive the username or API token. These credentials are intended to be replaced by a future approved credential mechanism.
 - **FR-005**: The Worker MUST call Bits using the action routes in the plan, with safe escaping for all dynamic path segments.
 - **FR-006**: After a successful Bits fetch, the Worker MUST log the raw Bits JSON and submit it unmodified through the existing external OrbitPlus client in its existing `orbitResponse` field.
-- **FR-007**: The client MUST POST to `{ORBITPLUS_URL}/v1/trip-details/refreshes`.
-- **FR-008**: The Worker MUST ACK only after `ACCEPTED`, `DUPLICATE`, or `STALE`.
+- **FR-007**: The client MUST POST to `{ORBITPLUS_URL}/api/tripdetails`.
+- **FR-008**: The Worker MUST ACK only after `ACCEPTED`. In the current phase, `ACCEPTED` is the only outcome the existing OrbitPlus destination produces for a successful submission.
 - **FR-009**: Invalid messages, Bits errors, OrbitPlus errors or retryable responses, and ACK errors MUST remain unacknowledged for existing RabbitMQ redelivery/DLQ behavior.
 - **FR-010**: `WORKER_CONCURRENCY` MUST bound local fetch/submit operations in one Worker process; it is distinct from `RABBITMQ_PREFETCH`, which bounds unacknowledged deliveries available to a consumer channel.
 - **FR-011**: Logs MUST exclude credentials, credential objects, credential-bearing request URLs, passwords, headers, and secrets.
@@ -56,13 +56,19 @@ The Worker validates messages before calling Bits; raw Bits JSON is logged only 
 
 The Worker configuration policy contains `APP_ENV`, RabbitMQ settings, `BITS_BASE_URL`, `ORBITPLUS_URL`, `WORKER_CONCURRENCY`, optional `WORKER_HTTP_TIMEOUT`, and optional Health API settings. It does not include `ORBIT_USERNAME`, `ORBIT_API_TOKEN`, `ORBIT_ZONE_URL`, or `WORKER_OPERATION_TIMEOUT`.
 
+Worker → OrbitPlus authentication exists in the current implementation as a bearer-token mechanism. The intended architectural direction is a dedicated context token specifically for Worker → OrbitPlus communication; the token name, HTTP header, format, validation, storage, and configuration variable names are unresolved. The current bearer-token implementation is a temporary detail, not the final authentication contract.
+
+## Future Outcomes
+
+In a future phase, when the OrbitPlus destination implements duplicate and stale detection, the Worker is expected to also ACK on `DUPLICATE` and `STALE` outcomes. These outcomes are not currently producible by the existing OrbitPlus destination and are outside the scope of the current phase.
+
 ## Out of Scope
 
-Scheduler and publishers; Master implementation, storage, and query APIs; Dragonfly; credential service; and V1 are out of scope. The Worker does not define retry policies, retry queues, dead-letter configuration, distributed coordination, or external destination internals.
+Scheduler and publishers; Master implementation, storage, and query APIs; Dragonfly; credential service; V1; duplicate detection; freshness tracking; and version comparison are out of scope. The Worker does not define retry policies, retry queues, dead-letter configuration, distributed coordination, or external destination internals. The dedicated Worker → OrbitPlus context-token contract details are unresolved and out of scope for this phase.
 
 ## Success Criteria
 
 - Every eligible action follows its documented Bits route and submits the successful raw Bits response unchanged.
-- ACK occurs only for `ACCEPTED`, `DUPLICATE`, or `STALE` after successful submission.
+- ACK occurs only for `ACCEPTED` after successful submission.
 - Invalid and failed processing paths are left unacknowledged.
 - Worker documentation contains no scheduler, Master-internal, Dragonfly, V1, persistence, query, freshness, deduplication, rate-limit, or security requirements.

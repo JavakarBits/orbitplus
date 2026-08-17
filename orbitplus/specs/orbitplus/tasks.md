@@ -1,47 +1,26 @@
-# Implementation Plan: orbitplus Master
+# orbitplus Implementation Tasks
 
 ## Overview
 
-Deliver only the first Master capability: Worker → approved HTTP POST → Orbitplus → receive raw Bits TripDetails JSON → validate it → Pretty-print valid JSON to the Terminal → return the approved HTTP response. The received JSON remains schema-agnostic throughout.
+Phase 1 delivers the Worker ingestion capability: receive the Worker envelope at `POST /api/tripdetails`, validate JSON syntax, log the payload, and return the acknowledgement response.
 
-## Prerequisite — HTTP contract approval gate
+## Phase 1 Tasks
 
-**No implementation or test task below may begin until explicit approval records all of these decisions in `requirements.md` and `spec.md`:**
+- [x] 1. Create the orbitplus service structure: entry point, configuration, application service, HTTP router.
+- [x] 2. Expose `POST /api/tripdetails` as the Worker ingestion endpoint.
+- [x] 3. Read the complete request body before JSON validation. On read failure, return HTTP 500 with `{"status":0,"message":"Internal server error"}`.
+- [x] 4. Validate the request body as syntactically valid JSON. On failure, return HTTP 400 with `{"status":0,"message":"Invalid trip details JSON"}`.
+- [x] 5. On valid JSON, log the raw payload to the terminal and return HTTP 200 with `{"status":1,"message":"Trip details received successfully"}`.
+- [x] 6. Expose `GET /health` returning `{"status":"UP"}`.
+- [x] 7. Configuration: support `APP_ENV` and `MASTER_API_PORT` environment variables.
+- [ ] 8. Add focused tests for: valid JSON acceptance (HTTP 200 + status:1), invalid JSON rejection (HTTP 400 + status:0), request body read failure (HTTP 500 + status:0), health endpoint (HTTP 200), and Content-Type headers.
+- [ ] 9. Verify the Worker integration contract: confirm orbitplusworker receives `status:1` and ACKs successfully.
 
-- POST ingestion endpoint path.
-- Successful HTTP status code and response body.
-- Request-body-read-failure HTTP status code and response body.
-- Invalid-JSON HTTP status code and response body.
+## Scope guardrails (Phase 1)
 
-Do not infer, select, or substitute any of these values. This gate does not authorize changes outside the approved contract.
+Do not implement in Phase 1: action-specific processing, cache, storage, query APIs, duplicate/stale detection, authentication validation, or scheduler/Worker behavior.
 
-## Tasks
-
-- [ ] 1. Create the basic Orbitplus Master service structure needed for the approved ingestion capability only.
-- [ ] 2. After HTTP contract approval, expose exactly the one approved POST ingestion endpoint; add no additional APIs, routes, or authentication behavior.
-- [ ] 3. Read the complete Request body before JSON validation. On a read failure, write only a Non-sensitive read-failure error, return only the approved outcome, and stop without validation, preservation, or Pretty-printed output.
-- [ ] 4. Validate the successfully read body as exactly one Syntactically valid JSON value. Permit trailing whitespace only; reject an empty or whitespace-only body, malformed JSON, a second JSON value, and other trailing non-whitespace data.
-- [ ] 5. Preserve each valid parsed JSON value structurally, including arbitrary values, unknown fields, and nested content. Apply no semantic schema validation, transformation, removal, or synthesis. Recognize `actionType` only when supplied; do not require it or action-specific fields.
-- [ ] 6. Pretty-print valid JSON to the Terminal and return only the approved success outcome. For invalid JSON, write only a Non-sensitive validation error, do not print the submitted JSON, do not recover or fall back, and return only the approved Client error outcome. Error diagnostics must never contain Request body content.
-- [ ] 7. Verify non-transforming action-dependent preservation: retain supplied `SEARCH` Normal Trip Data and `stageFare[]`, keeping `stageFare[].availableSeatCount` as Aggregate Availability; leave absent `bus.seatLayoutList[]` absent or not applicable; retain every supplied `BUSMAP` layout item unchanged; and retain the actual `SEARCHBUSMAP` structure without inventing a schema.
-- [ ] 8. Add focused tests—do not add a property-based testing framework—for: valid `SEARCH`; valid `BUSMAP` with `bus.seatLayoutList[]`; valid `SEARCH` without a layout; valid `SEARCHBUSMAP`; arbitrary/unknown fields; missing or unknown `actionType`; missing action-specific fields; empty and whitespace-only bodies; malformed JSON; valid JSON followed by a second value or non-whitespace data; and request-body read failure.
-- [ ] 9. In the focused tests, verify valid JSON is Pretty-printed; invalid JSON is not Pretty-printed; errors never include Request body content; `stageFare[].availableSeatCount` is never converted to layout data; and supplied `bus.seatLayoutList[]` is retained without modification.
-- [ ] 10. Run all focused tests and manually verify the approved endpoint using supplied `SEARCH` JSON. Confirm the approved response, Terminal output, and failure behavior.
-- [ ] 11. Final verification: confirm the implementation still contains only the approved ingestion capability and rerun all tests.
-
-## Scope guardrails
-
-Do not implement Dragonfly, Redis, database persistence, TripDetails storage or splitting, metadata persistence, query APIs or GET TripDetails, freshness tracking, deduplication, version comparison, TTL/expiration, scheduling, RabbitMQ publishing, Worker changes, credential service, seat-layout or seat-availability calculation, data enrichment or transformation, unapproved authentication, or additional APIs.
-
-Metadata, Common Trip Details, Fare / Seat Availability, and Seat Layout are documentation-only conceptual categories. Do not create them as separate models, storage structures, persistence objects, or processing pipelines in this phase.
-
-## Dependency order
-
-HTTP contract approval → project/service setup → approved POST endpoint → complete body read → JSON validation → valid JSON Terminal output → failure handling → action-dependent preservation verification → focused tests → manual endpoint verification → final test pass.
-
-## Notes
-
-The HTTP approval gate is mandatory and does not permit selecting unresolved contract values. Conceptual future data categories remain documentation only.
+These are future orbitplus responsibilities documented in [plan.md](./plan.md) and [spec.md](./spec.md). They are not permanent exclusions.
 
 ## Task Dependency Graph
 
@@ -50,9 +29,7 @@ The HTTP approval gate is mandatory and does not permit selecting unresolved con
   "waves": [
     { "id": 0, "tasks": ["1"] },
     { "id": 1, "tasks": ["2", "3", "4", "5", "6", "7"] },
-    { "id": 2, "tasks": ["8", "9"] },
-    { "id": 3, "tasks": ["10"] },
-    { "id": 4, "tasks": ["11"] }
+    { "id": 2, "tasks": ["8", "9"] }
   ]
 }
 ```

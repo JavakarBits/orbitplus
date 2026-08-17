@@ -88,23 +88,23 @@ func bitsRequestURL(baseURL *url.URL, message domain.TripDetailsRefreshMessage, 
 	requestURL.User = nil
 	requestURL.RawQuery = ""
 	requestURL.Fragment = ""
-	requestURL.Path = joinPathSegments(requestURL.Path, segments)
-	requestURL.RawPath = joinEscapedPathSegments(requestURL.EscapedPath(), segments)
-	return &requestURL, nil
-}
 
-func joinPathSegments(basePath string, segments []string) string {
-	basePath = strings.TrimRight(basePath, "/")
-	return basePath + "/" + strings.Join(segments, "/")
-}
-
-func joinEscapedPathSegments(basePath string, segments []string) string {
+	// Build the escaped path first, then derive the decoded Path from it so
+	// that Go's url.URL.RequestURI() consistently uses the escaped form.
+	escapedBase := strings.TrimRight(requestURL.EscapedPath(), "/")
 	escaped := make([]string, len(segments))
-	for index, segment := range segments {
-		escaped[index] = url.PathEscape(segment)
+	for i, segment := range segments {
+		escaped[i] = url.PathEscape(segment)
 	}
-	basePath = strings.TrimRight(basePath, "/")
-	return basePath + "/" + strings.Join(escaped, "/")
+	requestURL.RawPath = escapedBase + "/" + strings.Join(escaped, "/")
+
+	// Derive Path by unescaping RawPath so the two are consistent.
+	decoded, err := url.PathUnescape(requestURL.RawPath)
+	if err != nil {
+		return nil, fmt.Errorf("unescape Bits path: %w", err)
+	}
+	requestURL.Path = decoded
+	return &requestURL, nil
 }
 
 var _ worker.TripDetailsClient = (*BitsTripDetailsClient)(nil)

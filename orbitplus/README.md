@@ -1,21 +1,59 @@
-# orbitplusmaster
+# orbitplus
 
-Phase 1 of the OrbitPlus Master service.
+orbitplus is the TripDetails microservice in the OrbitPlus system. It receives TripDetails data from orbitplusworker and is architecturally responsible for processing, caching, storing, and serving TripDetails to the Orbit application.
 
-## Scope (Phase 1)
+## Current scope (Phase 1)
 
-This is the initial, minimal version of orbitplusmaster. It only:
+Phase 1 provides Worker ingestion only:
 
-- Accepts the raw Bits TripDetails JSON payload sent by the Worker at
-  `POST /api/tripdetails`, validates it is well-formed JSON, logs the full
-  received JSON to the terminal, and returns a success response.
-- Exposes `GET /health` for basic liveness checks.
+- Accepts the Worker submission at `POST /api/tripdetails`, validates JSON syntax, logs the raw payload, and returns a success response.
+- Exposes `GET /health` for liveness checks.
 
-It intentionally does **not** implement (these are future phases):
-Dragonfly caching, database persistence, TripDetails splitting/metadata/fare/
-seat storage, a query API, freshness/duplicate/stale detection, RabbitMQ,
-a credential service, Worker-Master authentication, retry logic, or other
-business rules.
+Phase 1 does **not** implement (these are future phases):
+- Action-specific TripDetails processing
+- Cache or storage
+- Search / Busmap / TripDetails query APIs for the Orbit application
+- Duplicate or stale detection
+- Worker → orbitplus authentication validation
+
+## Worker → orbitplus contract
+
+orbitplusworker submits TripDetails data as a JSON envelope:
+
+```json
+{
+  "actionType": "search",
+  "operatorCode": "OP1",
+  "fromCode": "CITY_A",
+  "toCode": "CITY_B",
+  "tripDate": "2026-08-20",
+  "orbitResponse": {
+    "status": 1,
+    "datetime": "2026-08-13 15:20:45",
+    "data": [...]
+  }
+}
+```
+
+- `actionType`: `search`, `busmap`, or `searchbusmap` (lowercase).
+- `operatorCode`: identifies the operator.
+- Action-specific fields: `fromCode`/`toCode`/`tripDate` for search/searchbusmap; `tripCode`/`fromStationCode`/`toStationCode`/`travelDate` for busmap.
+- `orbitResponse`: the raw Bits JSON response forwarded unchanged by the Worker.
+
+**Success response (HTTP 200):**
+
+```json
+{"status":1,"message":"Trip details received successfully"}
+```
+
+The Worker maps `status:1` to ACCEPTED and ACKs the RabbitMQ delivery.
+
+**Error responses:**
+
+| Scenario | HTTP Status | Body |
+|---|---|---|
+| Invalid JSON | 400 | `{"status":0,"message":"Invalid trip details JSON"}` |
+| Read failure | 500 | `{"status":0,"message":"Internal server error"}` |
 
 ## Running locally
 
@@ -27,69 +65,20 @@ go run ./cmd/orbitplusmaster
 
 ## Environment variables
 
-| Variable          | Required | Default       | Description                          |
-|--------------------|----------|---------------|---------------------------------------|
-| `APP_ENV`          | no       | `development` | Deployment environment label.         |
-| `MASTER_API_PORT`  | no       | `8082`         | Port the HTTP server listens on.      |
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `APP_ENV` | No | `development` | Deployment environment label |
+| `MASTER_API_PORT` | No | `8082` | Port the HTTP server listens on |
 
 ## Endpoints
 
 ### `POST /api/tripdetails`
 
-Accepts the complete raw Bits TripDetails JSON response as-is (no fields are
-dropped or reshaped). Logs the full received JSON, then returns success.
-
-**Example request:**
-
-```bash
-curl -X POST http://localhost:8082/api/tripdetails \
-  -H "Content-Type: application/json" \
-  -d '{
-    "status": 1,
-    "datetime": "2026-08-13 15:20:45",
-    "data": [
-      {
-        "tripCode": "2N38731S260820D",
-        "tripStageCode": "2N38731S260820D2T1",
-        "travelDate": "2026-08-20",
-        "tripDate": "2026-08-20",
-        "displayName": "NA",
-        "stageFare": [
-          { "fare": 2999, "seatType": "LSL", "seatName": "Lower Sleeper", "availableSeatCount": 17 },
-          { "fare": 2999, "seatType": "USL", "seatName": "Upper Sleeper", "availableSeatCount": 17 }
-        ],
-        "travelTime": "11 : 15",
-        "closeTime": "2026-08-20 22:00:00",
-        "bus": { "code": "BUS288D137E", "busType": "2+1 A/C Sleeper", "categoryCode": "LT03|CC01|CS99|MK99|ST03", "displayName": "2+1 SLEEPER AC", "name": "2+1 SLEEPER AC", "totalSeatCount": 36 },
-        "schedule": { "code": "SCH4B8E31H", "serviceNumber": "Mad TO Chen" },
-        "fromStation": { "name": "Madurai", "code": "STF17D52" },
-        "toStation": { "name": "Chennai", "code": "STF17D51" },
-        "tripStatus": { "code": "TPO", "name": "Trip Open" },
-        "operator": { "code": "bits", "name": "BITS Admin" }
-      }
-    ]
-  }'
-```
-
-**Example success response (`200 OK`):**
-
-```json
-{"status":1,"message":"Trip details received successfully"}
-```
-
-**Invalid JSON response (`400 Bad Request`):**
-
-```json
-{"status":0,"message":"Invalid trip details JSON"}
-```
+Accepts the Worker envelope. Validates that the body is syntactically valid JSON, logs the raw payload, and returns the success response.
 
 ### `GET /health`
 
 Returns basic liveness status.
-
-```bash
-curl http://localhost:8082/health
-```
 
 ```json
 {"status":"UP"}
@@ -101,4 +90,16 @@ curl http://localhost:8082/health
 docker compose up --build
 ```
 
-This builds and runs only `orbitplusmaster`, listening on port 8082.
+Builds and runs orbitplus, listening on port 8082.
+
+## Target architecture
+
+```text
+Orbit application
+    ↓ (read: search / busmap / tripdetails / station)
+orbitplus
+    ↑ (write: Worker submission)
+orbitplusworker → Bits Service → orbitplus
+```
+
+Future phases will add TripDetails processing, cache/storage, Orbit-facing query APIs, duplicate/stale detection, and Worker authentication. See [specs/orbitplus/](specs/orbitplus/) for details.

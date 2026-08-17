@@ -1,35 +1,123 @@
-# orbitplus Design and Delivery Plan
+# orbitplus Implementation Plan
 
-## Scope and approval gate
+**Feature:** `orbitplus` | **Spec:** [spec.md](./spec.md) | **Requirements:** [requirements.md](./requirements.md)
 
-This plan covers only the behavior documented in [requirements.md](requirements.md) and [spec.md](spec.md): complete raw-body reading, syntactic one-value JSON validation, schema-agnostic preservation, valid-input terminal pretty-printing, safe failure handling, and action-dependent content preservation without a fixed response schema.
+## Summary
 
-No delivery or implementation step below is actionable until all unresolved HTTP contract decisions have been explicitly approved and recorded: the endpoint path; success status and body; read-failure status and body; and invalid-JSON 4xx status and body. The approval gate does not permit inferring, substituting, or extending any HTTP decision.
+orbitplus is the TripDetails microservice. It receives data from orbitplusworker, and will eventually process, cache, store, and serve TripDetails to the Orbit application.
 
-## Delivery sequence after explicit HTTP approval
+Phase 1 covers ingestion only: validate JSON, log the payload, return an acknowledgement response enabling the Worker to ACK.
 
-1. **Record the approved HTTP contract.** Update only the requirements and design documents with the approved path and the three approved response contracts. Do not add unapproved HTTP details.
-2. **Define the request lifecycle.** Add the approved POST route and ensure complete body acquisition occurs before JSON evaluation. Route read failure, invalid JSON, and valid JSON to the specified terminal and approved HTTP outcomes.
-3. **Implement schema-agnostic JSON handling.** Accept exactly one JSON value with optional trailing whitespace, retain all arbitrary, nested, and unknown values, and render valid values as indented terminal JSON. Do not require or semantically validate `actionType` or action-specific fields.
-4. **Implement action-dependent preservation.** Recognize supplied `actionType` without imposing a shape. Preserve SEARCH Normal Trip Data and `stageFare[]` aggregate availability; retain supplied BUSMAP `bus.seatLayoutList[]` item-for-item; retain actual SEARCHBUSMAP structure; and leave any absent layout absent without fabrication.
-5. **Implement safe failure behavior.** For body-read failure, emit only a non-sensitive read-failure message and stop. For invalid JSON, emit only a non-sensitive validation message, omit pretty JSON, stop processing, and apply the approved 4xx contract. Exclude body content from diagnostics.
-6. **Verify the approved behavior.** Add example tests for the approved response contracts, deterministic read failure, design-only category review, and scope review. Add the property tests listed in `spec.md`, each with at least 100 iterations and its feature/property comment.
+## Phase 1 — current state
 
-## Future logical model documentation
+Phase 1 implementation is **complete**. The following behavior is delivered and running:
 
-The following model is conceptual future documentation only; it does not describe current processing or storage:
+- `POST /api/tripdetails` — accepts the Worker envelope, validates JSON syntax, logs the raw payload, returns `{"status":1,"message":"Trip details received successfully"}`.
+- `GET /health` — returns `{"status":"UP"}`.
+- Error responses: HTTP 400 for invalid JSON, HTTP 500 for read failure.
+- Configuration: `APP_ENV`, `MASTER_API_PORT`.
 
-- **Metadata:** Available trip-identifying values only—such as `operatorCode`, `fromStationCode`, `toStationCode`, `scheduleCode`, `tripCode`, `tripDate`, and `updatedAt`. A missing identifier remains absent.
-- **Common Trip Details:** Supplied common trip-level information, without a fixed field set.
-- **Fare / Seat Availability:** Supplied `stageFare[]`, including aggregate `availableSeatCount`.
-- **Seat Layout:** Only supplied `bus.seatLayoutList[]` and its individual layout items.
+### Outstanding Phase 1 work
 
-## Verification gates
+- **Tests:** Phase 1 has no test coverage. Focused tests should verify:
+  - Valid JSON → HTTP 200 + status:1
+  - Invalid JSON → HTTP 400 + status:0
+  - Request body read failure → HTTP 500 + status:0
+  - Health endpoint → HTTP 200 + status:UP
+  - Content-Type headers
 
-| Gate | Evidence |
-| --- | --- |
-| Approval gate | Explicit approval records the endpoint path and all three response contracts. Until then, delivery steps are blocked. |
-| Preservation gate | Tests demonstrate structural retention of arbitrary values, action recognition without fixed schema, SEARCH aggregate availability, supplied BUSMAP layout retention, actual SEARCHBUSMAP retention, and no fabricated layout. |
-| Failure-safety gate | Tests demonstrate complete-read ordering, termination after read failure, safe malformed-JSON rejection, no pretty JSON for failures, and no body content in terminal errors. |
-| Conceptual-model gate | Documentation review confirms only the four future categories, available identifiers only, and absence retained as absent. |
-| Scope gate | Review confirms the delivered behavior and tests match the approved requirements and no unapproved contract detail was added. |
+## Worker → orbitplus integration
+
+orbitplusworker submits a JSON envelope to `POST /api/tripdetails`:
+
+```json
+{
+  "actionType": "search|busmap|searchbusmap",
+  "operatorCode": "...",
+  "fromCode": "...",
+  "toCode": "...",
+  "tripDate": "...",
+  "tripCode": "...",
+  "fromStationCode": "...",
+  "toStationCode": "...",
+  "travelDate": "...",
+  "orbitResponse": <raw Bits JSON>
+}
+```
+
+The Worker maps HTTP 200 + `status:1` to ACCEPTED and ACKs the RabbitMQ delivery. HTTP 408/429/5xx are retryable (no ACK). Other errors leave the delivery unacknowledged.
+
+## Future phases
+
+### Phase 2 — TripDetails processing and storage
+
+- Parse Worker envelope: extract `actionType`, `operatorCode`, action-specific fields, `orbitResponse`.
+- Process `orbitResponse` according to action type:
+  - `search`: trip data, `stageFare[]`, aggregate availability
+  - `busmap`: TripDetails with `bus.seatLayoutList[]` (seat layout)
+  - `searchbusmap`: combined structure
+- Cache processed TripDetails.
+- Persist TripDetails to storage.
+- Implement duplicate detection → return distinguishable response to Worker.
+- Implement stale detection → return distinguishable response to Worker.
+
+### Phase 3 — Orbit-facing read APIs
+
+- Search API for the Orbit application.
+- Busmap API for the Orbit application.
+- TripDetails API for the Orbit application.
+- Station / station details.
+- All served from cached/stored data originating from the Worker pipeline.
+
+### Cross-cutting (future)
+
+- **Authentication:** Dedicated Worker → orbitplus context token (details unresolved).
+- **Inventory event support:** High-priority refresh triggered by inventory events through a queue (external publisher scope).
+- **Periodic refresh:** Scheduler dispatches work to orbitplusworker; data flows through to orbitplus (scheduler scope).
+- **Advance loading days:** Scheduling logic (scheduler scope).
+- **Orbit app route sync** (scheduler scope).
+- **Failure/analytics tracking.**
+
+## Target architecture
+
+```text
+                    ┌─────────────────────┐
+                    │  Orbit application  │
+                    └──────────┬──────────┘
+                               │
+                    Search / Busmap /
+                    TripDetails / Station
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │     orbitplus        │
+                    │                     │
+                    │ Ingestion (Phase 1) │
+                    │ Processing (Phase 2)│
+                    │ Cache/Storage (P2)  │
+                    │ Query APIs (Phase 3)│
+                    └──────────┬──────────┘
+                               ▲
+                               │
+                       Worker submission
+                               │
+                    ┌──────────┴──────────┐
+                    │   orbitplusworker    │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                         Bits Service
+```
+
+Additional write-side triggers (future):
+- Inventory events → high-priority queue → refresh
+- Scheduler → periodic refresh → orbitplusworker → Bits → orbitplus
+
+## Delivery approach
+
+| Phase | Status | Scope |
+|---|---|---|
+| Phase 1 | Complete (tests pending) | Ingestion, validation, logging, response contract |
+| Phase 2 | Future | Envelope parsing, action processing, cache, storage, duplicate/stale |
+| Phase 3 | Future | Orbit-facing read APIs |
+| Cross-cutting | Future | Authentication, analytics, event-driven refresh |

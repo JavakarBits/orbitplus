@@ -1,5 +1,7 @@
 # Product
 
-OrbitPlus Master is a Go HTTP ingestion service for raw Bits TripDetails payloads sent by a Worker. The current Phase 1 service exposes a liveness endpoint and accepts a TripDetails POST, validates JSON, logs the received payload, and returns a JSON outcome.
+orbitplus is a Go HTTP microservice that receives TripDetails data from orbitplusworker. Its architectural responsibility spans ingestion, processing, caching, storage, and serving TripDetails to the Orbit application.
 
-Keep the current phase deliberately small. Do not add persistence, caching, queues, authentication, retries, querying, duplicate/freshness logic, or schema-driven transformation unless the task explicitly expands the approved scope. Preserve incoming TripDetails data rather than inventing defaults or dropping unknown fields.
+Phase 1 scope is limited to ingestion: accept the Worker envelope at `POST /api/tripdetails`, validate JSON syntax, log the payload, and return the acknowledgement response. Do not add action-specific processing, cache, storage, query APIs, duplicate/stale detection, or authentication validation in Phase 1 unless the task explicitly expands the approved scope.
+
+Future phases will introduce TripDetails processing, cache/storage, Orbit-facing read APIs, duplicate/stale detection, and Worker → orbitplus authentication. These are future orbitplus responsibilities, not permanent exclusions. Preserve incoming data rather than inventing defaults or dropping unknown fields.
