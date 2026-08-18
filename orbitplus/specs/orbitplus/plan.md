@@ -10,21 +10,17 @@ Phase 1 covers ingestion only: validate JSON, log the payload, return an acknowl
 
 ## Phase 1 — current state
 
-Phase 1 implementation is **complete**. The following behavior is delivered and running:
+Phase 1 implementation and repository-side verification are **complete**. The following behavior is delivered and running:
 
 - `POST /api/tripdetails` — accepts the Worker envelope, validates JSON syntax, logs the raw payload, returns `{"status":1,"message":"Trip details received successfully"}`.
 - `GET /health` — returns `{"status":"UP"}`.
 - Error responses: HTTP 400 for invalid JSON, HTTP 500 for read failure.
 - Configuration: `APP_ENV`, `MASTER_API_PORT`.
 
-### Outstanding Phase 1 work
+### Verification status
 
-- **Tests:** Phase 1 has no test coverage. Focused tests should verify:
-  - Valid JSON → HTTP 200 + status:1
-  - Invalid JSON → HTTP 400 + status:0
-  - Request body read failure → HTTP 500 + status:0
-  - Health endpoint → HTTP 200 + status:UP
-  - Content-Type headers
+- **Automated coverage:** Focused HTTP tests verify valid JSON acceptance, invalid JSON rejection, request-body read failures, the health endpoint, `Content-Type` headers, and that the success log preserves the raw request body unchanged.
+- **Worker ACK integration:** Pending verification in the separate `orbitplusworker` repository with a RabbitMQ integration environment; that repository is not available in this workspace.
 
 ## Worker → orbitplus integration
 
@@ -51,23 +47,21 @@ The Worker maps HTTP 200 + `status:1` to ACCEPTED and ACKs the RabbitMQ delivery
 
 ### Phase 2 — TripDetails processing and storage
 
-- Parse Worker envelope: extract `actionType`, `operatorCode`, action-specific fields, `orbitResponse`.
-- Process `orbitResponse` according to action type:
-  - `search`: trip data, `stageFare[]`, aggregate availability
-  - `busmap`: TripDetails with `bus.seatLayoutList[]` (seat layout)
-  - `searchbusmap`: combined structure
-- Cache processed TripDetails.
-- Persist TripDetails to storage.
-- Implement duplicate detection → return distinguishable response to Worker.
-- Implement stale detection → return distinguishable response to Worker.
+Implemented for cacheable `search` and `busmap` submissions:
+
+- Parse Worker envelopes and persist Trip, Stage, BUSMAP, and route/stage metadata records.
+- Cache raw TripDetails content in Dragonfly and Stage Metadata in Cassandra.
+
+Remaining Phase 2 work: `searchbusmap` storage, duplicate/stale handling, and operational hardening.
 
 ### Phase 3 — Orbit-facing read APIs
 
-- Search API for the Orbit application.
-- Busmap API for the Orbit application.
-- TripDetails API for the Orbit application.
-- Station / station details.
-- All served from cached/stored data originating from the Worker pipeline.
+Implemented:
+
+- BusIQ-compatible persisted Search API.
+- BusIQ-compatible persisted Busmap API with stage-specific seat layouts.
+
+Future: combined TripDetails and station APIs.
 
 ### Cross-cutting (future)
 
@@ -117,7 +111,7 @@ Additional write-side triggers (future):
 
 | Phase | Status | Scope |
 |---|---|---|
-| Phase 1 | Complete (tests pending) | Ingestion, validation, logging, response contract |
-| Phase 2 | Future | Envelope parsing, action processing, cache, storage, duplicate/stale |
-| Phase 3 | Future | Orbit-facing read APIs |
+| Phase 1 | Repository complete; Worker ACK verification pending | Ingestion, validation, raw logging, response contract |
+| Phase 2 | Partially implemented | Search/Busmap persistence and metadata lookup; SEARCHBUSMAP, duplicate/stale pending |
+| Phase 3 | Partially implemented | Persisted Search and Busmap APIs; TripDetails and station APIs pending |
 | Cross-cutting | Future | Authentication, analytics, event-driven refresh |

@@ -2,17 +2,18 @@
 
 orbitplus is the TripDetails microservice in the OrbitPlus system. It receives TripDetails data from orbitplusworker and is architecturally responsible for processing, caching, storing, and serving TripDetails to the Orbit application.
 
-## Current scope (Phase 1)
+## Current scope
 
 Phase 1 provides Worker ingestion only:
 
 - Accepts the Worker submission at `POST /api/tripdetails`, validates JSON syntax, logs the raw payload, and returns a success response.
 - Exposes `GET /health` for liveness checks.
+- Reconstructs persisted Search and Busmap responses from Cassandra metadata and Dragonfly; it never calls an upstream TripDetails API.
 
 Phase 1 does **not** implement (these are future phases):
 - Action-specific TripDetails processing
 - Cache or storage
-- Search / Busmap / TripDetails query APIs for the Orbit application
+- Combined TripDetails and station query APIs for the Orbit application
 - Duplicate or stale detection
 - Worker → orbitplus authentication validation
 

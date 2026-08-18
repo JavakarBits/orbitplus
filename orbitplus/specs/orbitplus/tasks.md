@@ -13,8 +13,8 @@ Phase 1 delivers the Worker ingestion capability: receive the Worker envelope at
 - [x] 5. On valid JSON, log the raw payload to the terminal and return HTTP 200 with `{"status":1,"message":"Trip details received successfully"}`.
 - [x] 6. Expose `GET /health` returning `{"status":"UP"}`.
 - [x] 7. Configuration: support `APP_ENV` and `MASTER_API_PORT` environment variables.
-- [ ] 8. Add focused tests for: valid JSON acceptance (HTTP 200 + status:1), invalid JSON rejection (HTTP 400 + status:0), request body read failure (HTTP 500 + status:0), health endpoint (HTTP 200), and Content-Type headers.
-- [ ] 9. Verify the Worker integration contract: confirm orbitplusworker receives `status:1` and ACKs successfully.
+- [x] 8. Add focused tests for: valid JSON acceptance (HTTP 200 + status:1), invalid JSON rejection (HTTP 400 + status:0), request body read failure (HTTP 500 + status:0), health endpoint (HTTP 200), and Content-Type headers.
+- [ ] 9. Verify the Worker integration contract: confirm orbitplusworker receives `status:1` and ACKs successfully. This requires the separate Worker repository and a RabbitMQ integration environment.
 
 ## Scope guardrails (Phase 1)
 

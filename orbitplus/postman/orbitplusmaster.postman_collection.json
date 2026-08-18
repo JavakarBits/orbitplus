@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "orbitplusmaster",
-    "description": "Phase 1 requests for orbitplusmaster: TripDetails ingestion and health check.",
+    "description": "TripDetails ingestion, health, and persisted Search/Busmap API requests.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -9,42 +9,28 @@
       "name": "POST TripDetails",
       "request": {
         "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"status\": 1,\n  \"datetime\": \"2026-08-13 15:20:45\",\n  \"data\": [\n    {\n      \"tripCode\": \"2N38731S260820D\",\n      \"tripStageCode\": \"2N38731S260820D2T1\",\n      \"travelDate\": \"2026-08-20\",\n      \"tripDate\": \"2026-08-20\",\n      \"displayName\": \"NA\",\n      \"stageFare\": [\n        { \"fare\": 2999, \"seatType\": \"LSL\", \"seatName\": \"Lower Sleeper\", \"availableSeatCount\": 17 },\n        { \"fare\": 2999, \"seatType\": \"USL\", \"seatName\": \"Upper Sleeper\", \"availableSeatCount\": 17 }\n      ],\n      \"travelTime\": \"11 : 15\",\n      \"closeTime\": \"2026-08-20 22:00:00\",\n      \"bus\": { \"code\": \"BUS288D137E\", \"busType\": \"2+1 A/C Sleeper\", \"categoryCode\": \"LT03|CC01|CS99|MK99|ST03\", \"displayName\": \"2+1 SLEEPER AC\", \"name\": \"2+1 SLEEPER AC\", \"totalSeatCount\": 36 },\n      \"schedule\": { \"code\": \"SCH4B8E31H\", \"serviceNumber\": \"Mad TO Chen\" },\n      \"fromStation\": { \"name\": \"Madurai\", \"code\": \"STF17D52\" },\n      \"toStation\": { \"name\": \"Chennai\", \"code\": \"STF17D51\" },\n      \"tripStatus\": { \"code\": \"TPO\", \"name\": \"Trip Open\" },\n      \"operator\": { \"code\": \"bits\", \"name\": \"BITS Admin\" }\n    }\n  ]\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
+          "raw": "{\n  \"actionType\": \"search\",\n  \"operatorCode\": \"bits\",\n  \"fromCode\": \"STF17D52\",\n  \"toCode\": \"STF17D51\",\n  \"tripDate\": \"2026-08-20\",\n  \"orbitResponse\": {\n    \"status\": 1,\n    \"data\": [{\n      \"tripCode\": \"2N38731S260820D\",\n      \"tripStageCode\": \"2N38731S260820D2T1\",\n      \"travelDate\": \"2026-08-20\",\n      \"fromStation\": { \"code\": \"STF17D52\" },\n      \"toStation\": { \"code\": \"STF17D51\" }\n    }]\n  }\n}",
+          "options": { "raw": { "language": "json" } }
         },
-        "url": {
-          "raw": "http://localhost:8082/api/tripdetails",
-          "protocol": "http",
-          "host": ["localhost"],
-          "port": "8082",
-          "path": ["api", "tripdetails"]
-        }
+        "url": "http://localhost:8082/api/tripdetails"
+      }
+    },
+    { "name": "GET Health", "request": { "method": "GET", "url": "http://localhost:8082/health" } },
+    {
+      "name": "GET Search (persisted)",
+      "request": {
+        "method": "GET",
+        "url": "http://localhost:8082/busservices/api/3.0/json/bits/demo-user/demo-token/search/STF17D52/STF1GI77/2026-08-20"
       }
     },
     {
-      "name": "GET Health",
+      "name": "GET Busmap (persisted)",
       "request": {
         "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "http://localhost:8082/health",
-          "protocol": "http",
-          "host": ["localhost"],
-          "port": "8082",
-          "path": ["health"]
-        }
+        "url": "http://localhost:8082/busservices/api/3.0/json/bits/demo-user/demo-token/busmap/2N38731S260820D/STF17D52/STF1GI77/2026-08-20"
       }
     }
   ]

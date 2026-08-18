@@ -14,10 +14,11 @@ const (
 	Production  AppEnvironment = "production"
 )
 
-// RuntimeConfig is the minimal Phase 1 configuration for orbitplusmaster.
+// RuntimeConfig is the service runtime configuration.
 type RuntimeConfig struct {
 	AppEnvironment AppEnvironment
 	APIPort        int
+	Persistence    *PersistenceConfig
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment
@@ -29,8 +30,8 @@ func DefaultRuntimeConfig() RuntimeConfig {
 	}
 }
 
-// LoadRuntimeConfig reads Phase 1 configuration from environment variables.
-// Only APP_ENV and MASTER_API_PORT are supported in this phase.
+// LoadRuntimeConfig reads APP_ENV, MASTER_API_PORT, and optional datastore
+// configuration for persisted TripDetails reads and writes.
 func LoadRuntimeConfig() (RuntimeConfig, error) {
 	config := DefaultRuntimeConfig()
 
@@ -46,6 +47,11 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		config.APIPort = port
 	}
 
+	persistence, err := loadPersistenceConfig()
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	config.Persistence = persistence
 	return config, nil
 }
 
