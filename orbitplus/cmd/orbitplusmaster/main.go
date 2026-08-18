@@ -25,7 +25,8 @@ func main() {
 		log.Fatalf("initialize TripDetails persistence: %v", err)
 	}
 	defer closePersistence()
-	router := masterhttp.NewRouter(tripDetailsService, readService)
+	orionmaxInventoryChangeService := master.NewOrionmaxInventoryEventService()
+	router := masterhttp.NewRouter(tripDetailsService, orionmaxInventoryChangeService, readService)
 	server := &http.Server{Addr: config.Address(), Handler: router}
 	log.Printf("orbitplusmaster listening on %s", config.Address())
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -34,30 +35,30 @@ func main() {
 }
 
 func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService, *master.TripDetailsReadService, func(), error) {
-	if config.Persistence == nil {
+	if config.Storage == nil {
 		log.Print("TripDetails persistence disabled: ingestion is log-only and persisted reads are unavailable")
 		return master.NewTripDetailsService(), nil, func() {}, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), config.Persistence.Cassandra.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), config.Storage.Cassandra.Timeout)
 	defer cancel()
 	cache, err := dragonfly.NewTripDetailsCacheRepository(ctx, dragonfly.Config{
-		Address: config.Persistence.Dragonfly.Address, Password: config.Persistence.Dragonfly.Password,
-		Database: config.Persistence.Dragonfly.Database, DialTimeout: config.Persistence.Dragonfly.DialTimeout,
+		Address: config.Storage.Dragonfly.Address, Password: config.Storage.Dragonfly.Password,
+		Database: config.Storage.Dragonfly.Database, DialTimeout: config.Storage.Dragonfly.DialTimeout,
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	metadata, err := cassandra.NewTripDetailsMetadataRepository(ctx, cassandra.Config{
-		Hosts: config.Persistence.Cassandra.Hosts, Port: config.Persistence.Cassandra.Port,
-		Keyspace: config.Persistence.Cassandra.Keyspace, Username: config.Persistence.Cassandra.Username,
-		Password: config.Persistence.Cassandra.Password, Timeout: config.Persistence.Cassandra.Timeout,
+		Hosts: config.Storage.Cassandra.Hosts, Port: config.Storage.Cassandra.Port,
+		Keyspace: config.Storage.Cassandra.Keyspace, Username: config.Storage.Cassandra.Username,
+		Password: config.Storage.Cassandra.Password, Timeout: config.Storage.Cassandra.Timeout,
 	})
 	if err != nil {
 		_ = cache.Close()
 		return nil, nil, nil, err
 	}
-	persistence := master.NewTripDetailsPersistenceWithLogger(cache, metadata, log.Default())
+	persistence := master.NewTripDetailsStorageWithLogger(cache, metadata, log.Default())
 	readService := master.NewTripDetailsReadService(cache, metadata, log.Default())
 	closePersistence := func() { metadata.Close(); _ = cache.Close() }
-	return master.NewTripDetailsServiceWithPersistence(log.Default(), persistence), readService, closePersistence, nil
+	return master.NewTripDetailsServiceWithStorage(log.Default(), persistence), readService, closePersistence, nil
 }

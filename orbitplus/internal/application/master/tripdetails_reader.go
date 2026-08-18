@@ -99,7 +99,7 @@ func (service *TripDetailsReadService) Search(ctx context.Context, lookup RouteL
 			continue
 		}
 		service.logCandidate("search trip found", candidate.Metadata)
-		stage, err := withoutSeatLayoutList(candidate.Stage)
+		stage, err := withoutStageBus(candidate.Stage)
 		if err != nil {
 			service.logFailure("search stage sanitization")
 			return nil, err
@@ -236,8 +236,8 @@ func (service *TripDetailsReadService) logFailure(operation string) {
 }
 
 type resolvedStage struct {
-	Metadata domain.TripDetailsStageMetadata
 	Stage    []byte
+	Metadata domain.TripDetailsStageMetadata
 }
 
 func (service *TripDetailsReadService) resolveStages(ctx context.Context, lookup RouteLookup, candidates []domain.TripDetailsStageMetadata) ([]resolvedStage, error) {
@@ -286,6 +286,10 @@ func mergeJSONObjects(values ...[]byte) (json.RawMessage, error) {
 }
 
 func mergeTripStageBusMap(trip, stage, busMap []byte) (json.RawMessage, error) {
+	stage, err := withoutStageBus(stage)
+	if err != nil {
+		return nil, err
+	}
 	merged, err := mergeJSONObjects(trip, stage)
 	if err != nil {
 		return nil, err
@@ -304,7 +308,7 @@ func mergeTripStageBusMap(trip, stage, busMap []byte) (json.RawMessage, error) {
 	}
 	busRaw, exists := entry["bus"]
 	if !exists {
-		return nil, errors.New("stored stage has no bus")
+		return nil, errors.New("stored trip has no bus")
 	}
 	var bus map[string]json.RawMessage
 	if err := json.Unmarshal(busRaw, &bus); err != nil || bus == nil {
@@ -373,29 +377,14 @@ func isJSONNull(value json.RawMessage) bool {
 	return bytes.Equal(bytes.TrimSpace(value), []byte("null"))
 }
 
-// withoutSeatLayoutList removes only the BUSMAP-owned layout from a legacy
-// Stage document while retaining all other raw Stage fields.
-func withoutSeatLayoutList(stage []byte) (json.RawMessage, error) {
+// withoutStageBus removes the Trip-owned bus object from a Stage document.
+// This keeps historic Stage documents compatible with the current ownership
+// rule, where the Trip cache is the only SEARCH source of bus data.
+func withoutStageBus(stage []byte) (json.RawMessage, error) {
 	var entry map[string]json.RawMessage
 	if err := json.Unmarshal(stage, &entry); err != nil {
 		return nil, err
 	}
-	busRaw, exists := entry["bus"]
-	if !exists {
-		return stage, nil
-	}
-	var bus map[string]json.RawMessage
-	if err := json.Unmarshal(busRaw, &bus); err != nil || bus == nil {
-		return nil, errors.New("stored stage bus is not a JSON object")
-	}
-	if _, exists := bus["seatLayoutList"]; !exists {
-		return stage, nil
-	}
-	delete(bus, "seatLayoutList")
-	var err error
-	entry["bus"], err = json.Marshal(bus)
-	if err != nil {
-		return nil, err
-	}
+	delete(entry, "bus")
 	return json.Marshal(entry)
 }

@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// PersistenceConfig contains the explicit Phase 2 datastore settings.
-type PersistenceConfig struct {
+// StorageConfig contains the explicit Phase 2 datastore settings.
+type StorageConfig struct {
 	Dragonfly DragonflyConfig
 	Cassandra CassandraConfig
 }
@@ -30,7 +30,7 @@ type CassandraConfig struct {
 	Timeout  time.Duration
 }
 
-func loadPersistenceConfig() (*PersistenceConfig, error) {
+func loadStorageConfig() (*StorageConfig, error) {
 	dragonflyAddress := os.Getenv("DRAGONFLY_ADDRESS")
 	cassandraHosts := os.Getenv("CASSANDRA_HOSTS")
 	if dragonflyAddress == "" && cassandraHosts == "" {
@@ -63,7 +63,7 @@ func loadPersistenceConfig() (*PersistenceConfig, error) {
 	if len(hosts) == 0 {
 		return nil, fmt.Errorf("CASSANDRA_HOSTS must include at least one host")
 	}
-	return &PersistenceConfig{
+	return &StorageConfig{
 		Dragonfly: DragonflyConfig{Address: dragonflyAddress, Password: os.Getenv("DRAGONFLY_PASSWORD"), Database: database, DialTimeout: dragonflyTimeout},
 		Cassandra: CassandraConfig{Hosts: hosts, Port: cassandraPort, Keyspace: keyspace, Username: os.Getenv("CASSANDRA_USERNAME"), Password: os.Getenv("CASSANDRA_PASSWORD"), Timeout: cassandraTimeout},
 	}, nil

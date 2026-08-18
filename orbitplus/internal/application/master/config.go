@@ -18,7 +18,7 @@ const (
 type RuntimeConfig struct {
 	AppEnvironment AppEnvironment
 	APIPort        int
-	Persistence    *PersistenceConfig
+	Storage        *StorageConfig
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment
@@ -47,11 +47,11 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		config.APIPort = port
 	}
 
-	persistence, err := loadPersistenceConfig()
+	persistence, err := loadStorageConfig()
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
-	config.Persistence = persistence
+	config.Storage = persistence
 	return config, nil
 }
 

@@ -18,6 +18,19 @@
         "url": "http://localhost:8082/api/tripdetails"
       }
     },
+    {
+      "name": "POST Orionmax Inventory Change Event",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messageId\": \"example-inventory-change-001\",\n  \"data\": {}\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=inventory_change"
+      }
+    },
     { "name": "GET Health", "request": { "method": "GET", "url": "http://localhost:8082/health" } },
     {
       "name": "GET Search (persisted)",

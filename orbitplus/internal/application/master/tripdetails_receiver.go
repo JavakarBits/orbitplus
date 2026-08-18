@@ -9,7 +9,7 @@ import (
 // when the Phase 2 persistence dependency is configured.
 type TripDetailsService struct {
 	logger      *log.Logger
-	persistence *TripDetailsPersistence
+	persistence *TripDetailsStorage
 }
 
 // NewTripDetailsService constructs a log-only TripDetailsService.
@@ -19,11 +19,11 @@ func NewTripDetailsService() *TripDetailsService {
 
 // NewTripDetailsServiceWithLogger constructs a log-only service with logger.
 func NewTripDetailsServiceWithLogger(logger *log.Logger) *TripDetailsService {
-	return NewTripDetailsServiceWithPersistence(logger, nil)
+	return NewTripDetailsServiceWithStorage(logger, nil)
 }
 
-// NewTripDetailsServiceWithPersistence constructs a service with persistence.
-func NewTripDetailsServiceWithPersistence(logger *log.Logger, persistence *TripDetailsPersistence) *TripDetailsService {
+// NewTripDetailsServiceWithStorage constructs a service with persistence.
+func NewTripDetailsServiceWithStorage(logger *log.Logger, persistence *TripDetailsStorage) *TripDetailsService {
 	return &TripDetailsService{logger: logger, persistence: persistence}
 }
 
@@ -32,7 +32,7 @@ func (service *TripDetailsService) ReceiveTripDetails(rawBody []byte, value any)
 	service.logger.Print("TripDetails request received")
 	service.logger.Printf("TripDetails payload: %s", rawBody)
 	if service.persistence != nil {
-		if err := service.persistence.Persist(context.Background(), value); err != nil {
+		if err := service.persistence.Store(context.Background(), value); err != nil {
 			return err
 		}
 	}
