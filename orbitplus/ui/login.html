@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Access OrbitPlus</title>
+  <link rel="stylesheet" href="/orbitplus/styles.css">
+</head>
+<body>
+  <main class="home-shell">
+    <section class="home-card login-card">
+      <p class="eyebrow">ORBITPLUS MASTER</p>
+      <h1>Access Queue Operations</h1>
+      <p class="lead">Enter your access token to view the Queue Jobs Report.</p>
+      <form class="access-form" action="/orbitplus/login" method="post">
+        <label for="access-token">Access token</label>
+        <input id="access-token" name="access_token" type="password" autocomplete="current-password" required autofocus>
+        <button class="primary-button" type="submit">Continue<span aria-hidden="true">→</span></button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

@@ -21,12 +21,13 @@ func main() {
 	}
 	log.Printf("orbitplusmaster configuration loaded: APP_ENV=%s MASTER_API_PORT=%d", config.AppEnvironment, config.APIPort)
 
-	tripDetailsService, readService, metadata, metrix, closePersistence, err := newMasterServices(config)
+	tripDetailsService, readService, metadata, metrix, periodicRoutes, closePersistence, err := newMasterServices(config)
 	if err != nil {
 		log.Fatalf("initialize TripDetails persistence: %v", err)
 	}
 	defer closePersistence()
 	var inventoryPublisher master.InventoryEventPublisher
+	var periodicRefreshPublisher master.PeriodicRefreshPublisher
 	closeInventoryPublisher := func() {}
 	if config.Queue != nil {
 		publisher, err := rabbitmq.NewInventoryEventPublisher(config.Queue.URL, config.Queue.Exchange)
@@ -34,11 +35,21 @@ func main() {
 			log.Fatalf("initialize RabbitMQ inventory event publisher: %v", err)
 		}
 		inventoryPublisher = publisher
+		periodicRefreshPublisher = publisher
 		closeInventoryPublisher = func() { _ = publisher.Close() }
 	}
 	defer closeInventoryPublisher()
+	if config.PeriodicRefreshInterval > 0 {
+		scheduler := master.NewPeriodicRefreshScheduler(config.PeriodicRefreshInterval, periodicRoutes, metadata, periodicRefreshPublisher, metrix)
+		stopScheduler := scheduler.Start(context.Background())
+		defer stopScheduler()
+		log.Printf("periodic route refresh scheduler enabled: interval=%s", config.PeriodicRefreshInterval)
+	}
 	orionmaxInventoryChangeService := master.NewOrionmaxInventoryEventService(inventoryPublisher, metadata, metrix)
-	router := masterhttp.NewRouter(tripDetailsService, orionmaxInventoryChangeService, readService)
+	queueJobsService := master.NewQueueJobsService(metrix)
+	tablesService := master.NewTablesService(periodicRoutes, metadata)
+	uiAccessAuth := masterhttp.NewUIAccessAuth(config.UIAccessToken, config.AppEnvironment == master.Production)
+	router := masterhttp.NewRouter(tripDetailsService, orionmaxInventoryChangeService, readService, queueJobsService, tablesService, uiAccessAuth)
 	server := &http.Server{Addr: config.Address(), Handler: router}
 	log.Printf("orbitplusmaster listening on %s", config.Address())
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -46,10 +57,10 @@ func main() {
 	}
 }
 
-func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService, *master.TripDetailsReadService, *cassandra.TripDetailsMetadataRepository, *cassandra.QueueMetrixRepository, func(), error) {
+func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService, *master.TripDetailsReadService, *cassandra.TripDetailsMetadataRepository, *cassandra.QueueMetrixRepository, *cassandra.PeriodicRefreshRoutesRepository, func(), error) {
 	if config.Storage == nil {
 		log.Print("TripDetails persistence and queue metrix tracking are disabled: ingestion is log-only and persisted reads are unavailable")
-		return master.NewTripDetailsService(), nil, nil, nil, func() {}, nil
+		return master.NewTripDetailsService(), nil, nil, nil, nil, func() {}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), config.Storage.Cassandra.Timeout)
 	defer cancel()
@@ -58,7 +69,7 @@ func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService,
 		Database: config.Storage.Dragonfly.Database, DialTimeout: config.Storage.Dragonfly.DialTimeout,
 	})
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	cassandraConfig := cassandra.Config{
 		Hosts: config.Storage.Cassandra.Hosts, Port: config.Storage.Cassandra.Port,
@@ -68,16 +79,30 @@ func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService,
 	metadata, err := cassandra.NewTripDetailsMetadataRepository(ctx, cassandraConfig)
 	if err != nil {
 		_ = cache.Close()
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	metrix, err := cassandra.NewQueueMetrixRepository(ctx, cassandraConfig)
 	if err != nil {
 		metadata.Close()
 		_ = cache.Close()
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
+	}
+	periodicRoutes, err := cassandra.NewPeriodicRefreshRoutesRepository(ctx, cassandraConfig)
+	if err != nil {
+		metrix.Close()
+		metadata.Close()
+		_ = cache.Close()
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	persistence := master.NewTripDetailsStorageWithLogger(cache, metadata, log.Default())
 	readService := master.NewTripDetailsReadService(cache, metadata, log.Default())
-	closePersistence := func() { metrix.Close(); metadata.Close(); _ = cache.Close() }
-	return master.NewTripDetailsServiceWithStorageAndMetrix(log.Default(), persistence, metrix), readService, metadata, metrix, closePersistence, nil
+	closePersistence := func() {
+		if periodicRoutes != nil {
+			periodicRoutes.Close()
+		}
+		metrix.Close()
+		metadata.Close()
+		_ = cache.Close()
+	}
+	return master.NewTripDetailsServiceWithStorageAndMetrix(log.Default(), persistence, metrix), readService, metadata, metrix, periodicRoutes, closePersistence, nil
 }

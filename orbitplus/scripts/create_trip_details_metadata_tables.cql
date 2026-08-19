@@ -52,3 +52,17 @@ CREATE TABLE IF NOT EXISTS queue_metrix (
     failure_message text,
     updated_at timestamp
 );
+
+
+-- Active routes share an is_active partition so the single-process scheduler can
+-- query every enabled route without filtering by ticket_count.
+CREATE TABLE IF NOT EXISTS periodic_refresh_routes (
+    is_active boolean,
+    operator_code text,
+    travel_date text,
+    from_station text,
+    to_station text,
+    ticket_count int,
+    updated_at timestamp,
+    PRIMARY KEY ((is_active), operator_code, travel_date, from_station, to_station)
+);

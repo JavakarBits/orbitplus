@@ -41,16 +41,25 @@ func (c *stubBitsClient) FetchTripDetails(_ context.Context, req worker.BitsTrip
 }
 
 type stubOrbitPlusClient struct {
-	status  worker.OrbitPlusStatus
-	err     error
-	called  bool
-	request worker.TripDetailsRefreshRequest
+	status     worker.OrbitPlusStatus
+	err        error
+	called     bool
+	request    worker.TripDetailsRefreshRequest
+	dlqErr     error
+	dlqCalled  bool
+	dlqRequest worker.TripDetailsDLQRequest
 }
 
 func (c *stubOrbitPlusClient) SendTripDetails(_ context.Context, req worker.TripDetailsRefreshRequest) (worker.OrbitPlusStatus, error) {
 	c.called = true
 	c.request = req
 	return c.status, c.err
+}
+
+func (c *stubOrbitPlusClient) SendTripDetailsDLQ(_ context.Context, req worker.TripDetailsDLQRequest) error {
+	c.dlqCalled = true
+	c.dlqRequest = req
+	return c.dlqErr
 }
 
 type stubConsumer struct {
@@ -261,15 +270,16 @@ func TestHandle_UnsupportedAction_NoBitsOrOrbitPlusCall(t *testing.T) {
 	}
 }
 
-// --- Tests: Bits failure leaves unacknowledged ---
+// --- Tests: terminal failures are reported to OrbitPlus DLQ ---
 
-func TestHandle_BitsError_LeavesUnacknowledged(t *testing.T) {
+func TestHandle_BitsError_ReportsToDLQAndAcks(t *testing.T) {
 	bitsClient := &stubBitsClient{err: fmt.Errorf("Bits returned HTTP 500")}
 	orbitPlusClient := &stubOrbitPlusClient{}
 	w := newTestWorker(bitsClient, orbitPlusClient)
 
 	delivery := makeDelivery(domain.TripDetailsRefreshMessage{
 		ActionType:   "search",
+		ReferenceID:  "ref-bits-error",
 		OperatorCode: "OP1",
 		FromCode:     "FROM",
 		ToCode:       "TO",
@@ -277,24 +287,28 @@ func TestHandle_BitsError_LeavesUnacknowledged(t *testing.T) {
 	})
 	result := w.Handle(context.Background(), delivery)
 
-	if result.Status != worker.ExecutionSourceError {
-		t.Fatalf("expected SOURCE_ERROR, got %s", result.Status)
+	if result.Status != worker.ExecutionDLQReported || !result.Acknowledged || !delivery.acked {
+		t.Fatalf("expected acknowledged DLQ report, got %+v", result)
 	}
 	if orbitPlusClient.called {
-		t.Fatal("OrbitPlus client should not be called after Bits failure")
+		t.Fatal("normal OrbitPlus client should not be called after Bits failure")
 	}
-	if delivery.acked {
-		t.Fatal("delivery should not be acked after Bits failure")
+	if !orbitPlusClient.dlqCalled {
+		t.Fatal("expected OrbitPlus DLQ client to be called")
+	}
+	if orbitPlusClient.dlqRequest.ReferenceID != "ref-bits-error" {
+		t.Errorf("DLQ referenceId: got %q", orbitPlusClient.dlqRequest.ReferenceID)
 	}
 }
 
-func TestHandle_BitsEmptyResponse_LeavesUnacknowledged(t *testing.T) {
+func TestHandle_BitsEmptyResponse_ReportsToDLQAndAcks(t *testing.T) {
 	bitsClient := &stubBitsClient{response: worker.BitsTripDetailsResponse{Body: []byte{}}}
 	orbitPlusClient := &stubOrbitPlusClient{}
 	w := newTestWorker(bitsClient, orbitPlusClient)
 
 	delivery := makeDelivery(domain.TripDetailsRefreshMessage{
 		ActionType:   "search",
+		ReferenceID:  "ref-bits-empty",
 		OperatorCode: "OP1",
 		FromCode:     "FROM",
 		ToCode:       "TO",
@@ -302,26 +316,19 @@ func TestHandle_BitsEmptyResponse_LeavesUnacknowledged(t *testing.T) {
 	})
 	result := w.Handle(context.Background(), delivery)
 
-	if result.Status != worker.ExecutionSourceError {
-		t.Fatalf("expected SOURCE_ERROR, got %s", result.Status)
-	}
-	if orbitPlusClient.called {
-		t.Fatal("OrbitPlus client should not be called after empty Bits response")
-	}
-	if delivery.acked {
-		t.Fatal("delivery should not be acked after empty Bits response")
+	if result.Status != worker.ExecutionDLQReported || !delivery.acked || !orbitPlusClient.dlqCalled {
+		t.Fatalf("expected acknowledged DLQ report, got %+v", result)
 	}
 }
 
-// --- Tests: OrbitPlus failure leaves unacknowledged ---
-
-func TestHandle_OrbitPlusError_LeavesUnacknowledged(t *testing.T) {
+func TestHandle_OrbitPlusError_ReportsToDLQAndAcks(t *testing.T) {
 	bitsClient := &stubBitsClient{response: worker.BitsTripDetailsResponse{Body: []byte(`{"data":1}`)}}
 	orbitPlusClient := &stubOrbitPlusClient{err: fmt.Errorf("OrbitPlus request: connection refused")}
 	w := newTestWorker(bitsClient, orbitPlusClient)
 
 	delivery := makeDelivery(domain.TripDetailsRefreshMessage{
 		ActionType:   "search",
+		ReferenceID:  "ref-orbit-error",
 		OperatorCode: "OP1",
 		FromCode:     "FROM",
 		ToCode:       "TO",
@@ -329,21 +336,19 @@ func TestHandle_OrbitPlusError_LeavesUnacknowledged(t *testing.T) {
 	})
 	result := w.Handle(context.Background(), delivery)
 
-	if result.Status != worker.ExecutionOrbitPlusError {
-		t.Fatalf("expected ORBITPLUS_ERROR, got %s", result.Status)
-	}
-	if delivery.acked {
-		t.Fatal("delivery should not be acked after OrbitPlus error")
+	if result.Status != worker.ExecutionDLQReported || !delivery.acked || !orbitPlusClient.dlqCalled {
+		t.Fatalf("expected acknowledged DLQ report, got %+v", result)
 	}
 }
 
-func TestHandle_OrbitPlusRetryable_LeavesUnacknowledged(t *testing.T) {
+func TestHandle_OrbitPlusRetryable_ReportsToDLQAndAcks(t *testing.T) {
 	bitsClient := &stubBitsClient{response: worker.BitsTripDetailsResponse{Body: []byte(`{"data":1}`)}}
 	orbitPlusClient := &stubOrbitPlusClient{status: worker.OrbitPlusRetryable}
 	w := newTestWorker(bitsClient, orbitPlusClient)
 
 	delivery := makeDelivery(domain.TripDetailsRefreshMessage{
 		ActionType:   "search",
+		ReferenceID:  "ref-orbit-retryable",
 		OperatorCode: "OP1",
 		FromCode:     "FROM",
 		ToCode:       "TO",
@@ -351,14 +356,34 @@ func TestHandle_OrbitPlusRetryable_LeavesUnacknowledged(t *testing.T) {
 	})
 	result := w.Handle(context.Background(), delivery)
 
-	if result.Status != worker.ExecutionOrbitPlusOutcome {
-		t.Fatalf("expected ORBITPLUS_OUTCOME, got %s", result.Status)
+	if result.Status != worker.ExecutionDLQReported || !delivery.acked || !orbitPlusClient.dlqCalled {
+		t.Fatalf("expected acknowledged DLQ report, got %+v", result)
 	}
 	if result.OrbitPlusStatus != worker.OrbitPlusRetryable {
 		t.Fatalf("expected RETRYABLE, got %s", result.OrbitPlusStatus)
 	}
+}
+
+func TestHandle_DLQError_LeavesUnacknowledged(t *testing.T) {
+	bitsClient := &stubBitsClient{err: fmt.Errorf("Bits returned HTTP 500")}
+	orbitPlusClient := &stubOrbitPlusClient{dlqErr: fmt.Errorf("OrbitPlus DLQ request: connection refused")}
+	w := newTestWorker(bitsClient, orbitPlusClient)
+
+	delivery := makeDelivery(domain.TripDetailsRefreshMessage{
+		ActionType:   "search",
+		ReferenceID:  "ref-dlq-error",
+		OperatorCode: "OP1",
+		FromCode:     "FROM",
+		ToCode:       "TO",
+		TripDate:     "2026-08-20",
+	})
+	result := w.Handle(context.Background(), delivery)
+
+	if result.Status != worker.ExecutionDLQError {
+		t.Fatalf("expected DLQ_ERROR, got %s", result.Status)
+	}
 	if delivery.acked {
-		t.Fatal("delivery should not be acked for retryable outcome")
+		t.Fatal("delivery should not be acked when DLQ reporting fails")
 	}
 }
 
@@ -472,9 +497,9 @@ func TestHandle_MessageIdentityForwardedToOrbitPlus(t *testing.T) {
 	w := newTestWorker(bitsClient, orbitPlusClient)
 
 	msg := domain.TripDetailsRefreshMessage{
-		ActionType:   "busmap",
-		OperatorCode: "OPERATOR_X",
-		TripCode:     "TRIP_ABC",
+		ActionType:      "busmap",
+		OperatorCode:    "OPERATOR_X",
+		TripCode:        "TRIP_ABC",
 		FromStationCode: "STN_A",
 		ToStationCode:   "STN_B",
 		TravelDate:      "2026-09-15",

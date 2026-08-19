@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Queue Jobs | OrbitPlus Master</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/orbitplus/styles.css">
 </head>
 <body>
   <header class="report-header">
-    <a class="brand" href="/">OrbitPlus <span>Master</span></a>
-    <a class="back-link" href="/">← Home</a>
+    <a class="brand" href="/orbitplus/">OrbitPlus <span>Master</span></a>
+    <a class="back-link" href="/orbitplus/">← Home</a>
   </header>
   <main class="report-shell">
     <div class="report-title">
@@ -17,15 +17,75 @@
       <button class="filter-button" type="button" disabled>Filters</button>
     </div>
     <div class="report-tabs" aria-label="Queue job status views">
-      <button class="active" type="button">All Jobs</button><button type="button">Queued</button>
-      <button type="button">Completed</button><button type="button">Dead</button>
+      <button class="active" data-status="" type="button">All Jobs</button><button data-status="QUEUED" type="button">Queued</button>
+      <button data-status="COMPLETED" type="button">Completed</button><button data-status="DEAD" type="button">Dead</button>
     </div>
     <section class="report-table" aria-label="Queue jobs report">
       <div class="table-scroll"><table>
         <thead><tr><th>Reference ID</th><th>Activity Type</th><th>Action Type</th><th>Operator</th><th>From</th><th>To</th><th>Travel Date</th><th>Status</th><th>Queued At</th><th>Completed At</th><th>Failure Message</th></tr></thead>
-        <tbody><tr><td colspan="11" class="empty-state"><strong>No report data loaded</strong><span>Queue Jobs data will appear here when the report API is added.</span></td></tr></tbody>
+        <tbody id="queue-jobs-body"></tbody>
       </table></div>
     </section>
   </main>
+  <script>
+    const reportBody = document.getElementById("queue-jobs-body");
+    const statusButtons = document.querySelectorAll(".report-tabs button");
+    let jobs = [];
+    let statusFilter = "";
+
+    function cell(row, value, className) {
+      const element = document.createElement("td");
+      if (className) element.className = className;
+      element.textContent = value || "—";
+      row.append(element);
+    }
+
+    function formatTime(value) {
+      return value ? new Date(value).toLocaleString() : "—";
+    }
+
+    function showEmpty(title, message) {
+      reportBody.replaceChildren();
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 11;
+      cell.className = "empty-state";
+      const heading = document.createElement("strong");
+      const detail = document.createElement("span");
+      heading.textContent = title;
+      detail.textContent = message;
+      cell.append(heading, detail);
+      row.append(cell);
+      reportBody.append(row);
+    }
+
+    function renderJobs() {
+      const visibleJobs = jobs.filter((job) => !statusFilter || job.queueStatus === statusFilter);
+      if (!visibleJobs.length) {
+        showEmpty("No queue jobs found", statusFilter ? "No jobs match this status." : "No queue jobs have been recorded yet.");
+        return;
+      }
+      reportBody.replaceChildren();
+      visibleJobs.forEach((job) => {
+        const row = document.createElement("tr");
+        cell(row, job.referenceId); cell(row, job.activityType); cell(row, job.actionType); cell(row, job.operatorCode);
+        cell(row, job.fromStation); cell(row, job.toStation); cell(row, job.travelDate);
+        cell(row, job.queueStatus, "status-cell status-" + (job.queueStatus || "").toLowerCase());
+        cell(row, formatTime(job.queuedAt)); cell(row, formatTime(job.completedAt)); cell(row, job.failureMessage);
+        reportBody.append(row);
+      });
+    }
+
+    statusButtons.forEach((button) => button.addEventListener("click", () => {
+      statusFilter = button.dataset.status;
+      statusButtons.forEach((item) => item.classList.toggle("active", item === button));
+      renderJobs();
+    }));
+
+    fetch("/orbitplus/api/reports/queue-jobs", { credentials: "same-origin" })
+      .then((response) => response.ok ? response.json() : Promise.reject())
+      .then((response) => { jobs = response.data || []; renderJobs(); })
+      .catch(() => showEmpty("Unable to load queue jobs", "Refresh the page after the service is connected to Cassandra."));
+  </script>
 </body>
 </html>

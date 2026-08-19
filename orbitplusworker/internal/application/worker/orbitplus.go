@@ -13,6 +13,12 @@ type TripDetailsRefreshRequest struct {
 	BitsResponse []byte
 }
 
+// TripDetailsDLQRequest identifies a failed refresh for OrbitPlus-managed DLQ handling.
+type TripDetailsDLQRequest struct {
+	ReferenceID    string
+	FailureMessage string
+}
+
 type OrbitPlusStatus string
 
 const (
@@ -34,7 +40,8 @@ func (status OrbitPlusStatus) AcknowledgementEligible() bool {
 	return status == OrbitPlusAccepted
 }
 
-// OrbitPlusClient submits TripDetails only to OrbitPlus.
+// OrbitPlusClient submits successful TripDetails and terminal failures to OrbitPlus.
 type OrbitPlusClient interface {
 	SendTripDetails(ctx context.Context, request TripDetailsRefreshRequest) (OrbitPlusStatus, error)
+	SendTripDetailsDLQ(ctx context.Context, request TripDetailsDLQRequest) error
 }

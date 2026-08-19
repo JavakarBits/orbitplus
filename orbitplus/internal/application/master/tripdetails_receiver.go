@@ -2,6 +2,7 @@ package master
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -59,6 +60,22 @@ func (service *TripDetailsService) ReceiveTripDetails(rawBody []byte, value any)
 		}
 	}
 	service.logger.Print("TripDetails request completed successfully")
+	return nil
+}
+
+// MarkTripDetailsDead records a Worker dead-letter notification for one queued job.
+func (service *TripDetailsService) MarkTripDetailsDead(ctx context.Context, referenceID, failureMessage string) error {
+	if service == nil || service.metrix == nil {
+		return errors.New("queue metrix tracking is not configured")
+	}
+	now := time.Now().UTC()
+	if err := service.metrix.MarkDead(ctx, domain.QueueMetrix{
+		ReferenceID: referenceID, QueueStatus: domain.QueueStatusDead, DeadLetteredAt: now,
+		FailureMessage: failureMessage, UpdatedAt: now,
+	}); err != nil {
+		return err
+	}
+	service.logger.Printf("TripDetails DLQ notification recorded: reference_id=%q", referenceID)
 	return nil
 }
 

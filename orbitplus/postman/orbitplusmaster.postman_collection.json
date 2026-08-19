@@ -19,6 +19,19 @@
       }
     },
     {
+      "name": "POST TripDetails DLQ Notification",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"referenceId\": \"ed1a859fee57\",\n  \"failureMessage\": \"Worker could not process the searchbusmap job after retry attempts\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": "http://localhost:8082/orbitplus/api/tripdetails/dlq"
+      }
+    },
+    {
       "name": "POST Orionmax Inventory Change Event",
       "request": {
         "method": "POST",

@@ -37,10 +37,9 @@ func NewTripDetailsRefreshWorker(config WorkerConfig, bitsBaseURL string, consum
 	return &TripDetailsRefreshWorker{config: config, bitsBaseURL: bitsBaseURL, consumer: consumer, source: source, orbitPlusClient: orbitPlusClient}, nil
 }
 
-// Handle processes one delivery. It owns message extraction, transient
-// credential construction, source retrieval, OrbitPlus submission, and terminal
-// acknowledgement. Any error or nonterminal outcome stays unacknowledged for
-// RabbitMQ redelivery or DLQ handling.
+// Handle processes one delivery. A valid message is processed once. Any terminal
+// processing failure is reported to the OrbitPlus DLQ API; the RabbitMQ
+// delivery is acknowledged only after the DLQ report is accepted.
 func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery RabbitMQDelivery) (result ExecutionResult) {
 	startedAt := time.Now()
 	var message domain.TripDetailsRefreshMessage
@@ -68,18 +67,18 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 
 	credential, err := worker.temporaryCredential(message)
 	if err != nil {
-		return worker.operationError(ExecutionCredentialError, err)
+		return worker.reportFailure(ctx, delivery, message, ExecutionCredentialError)
 	}
 	sourceResult, err := worker.fetchTripDetails(ctx, message, credential)
 	if err != nil {
-		return worker.operationError(ExecutionSourceError, err)
+		return worker.reportFailure(ctx, delivery, message, ExecutionSourceError)
 	}
 	orbitPlusStatus, err := worker.pushTripDetails(ctx, message, sourceResult)
 	if err != nil {
-		return worker.operationError(ExecutionOrbitPlusError, err)
+		return worker.reportFailure(ctx, delivery, message, ExecutionOrbitPlusError)
 	}
 	if !orbitPlusStatus.AcknowledgementEligible() {
-		return ExecutionResult{Status: ExecutionOrbitPlusOutcome, OrbitPlusStatus: orbitPlusStatus}
+		return worker.reportFailure(ctx, delivery, message, ExecutionOrbitPlusOutcome, orbitPlusStatus)
 	}
 
 	slog.Info("RabbitMQ acknowledgement started", "actionType", message.ActionType, "operator", message.OperatorCode, "status", orbitPlusStatus)
@@ -89,6 +88,31 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	}
 	slog.Info("RabbitMQ acknowledgement completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", true)
 	return ExecutionResult{Status: ExecutionAcknowledged, OrbitPlusStatus: orbitPlusStatus, Acknowledged: true}
+}
+
+func (worker *TripDetailsRefreshWorker) reportFailure(ctx context.Context, delivery RabbitMQDelivery, message domain.TripDetailsRefreshMessage, failureStatus ExecutionStatus, orbitPlusStatus ...OrbitPlusStatus) ExecutionResult {
+	failureMessage := fmt.Sprintf("Worker could not process the %s job after a failed processing attempt", message.ActionType)
+	slog.Info("OrbitPlus DLQ report started", "actionType", message.ActionType, "operator", message.OperatorCode, "failureStatus", failureStatus)
+	if err := worker.orbitPlusClient.SendTripDetailsDLQ(ctx, TripDetailsDLQRequest{
+		ReferenceID:    message.ReferenceID,
+		FailureMessage: failureMessage,
+	}); err != nil {
+		slog.Info("OrbitPlus DLQ report completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
+		return worker.operationError(ExecutionDLQError, err, orbitPlusStatus...)
+	}
+	slog.Info("OrbitPlus DLQ report completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", true)
+
+	slog.Info("RabbitMQ acknowledgement started", "actionType", message.ActionType, "operator", message.OperatorCode, "status", "DLQ_REPORTED")
+	if err := delivery.Ack(ctx); err != nil {
+		slog.Info("RabbitMQ acknowledgement completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
+		return worker.operationError(ExecutionAckError, err, orbitPlusStatus...)
+	}
+	slog.Info("RabbitMQ acknowledgement completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", true)
+	result := ExecutionResult{Status: ExecutionDLQReported, Acknowledged: true}
+	if len(orbitPlusStatus) == 1 {
+		result.OrbitPlusStatus = orbitPlusStatus[0]
+	}
+	return result
 }
 
 func parseTripDetailsRefreshMessage(delivery RabbitMQDelivery) (domain.TripDetailsRefreshMessage, error) {

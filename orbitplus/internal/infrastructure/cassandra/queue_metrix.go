@@ -16,7 +16,7 @@ type QueueMetrixRepository struct {
 	session *gocql.Session
 }
 
-// NewQueueMetrixRepository connects to Cassandra and ensures queue_metrix exists.
+// NewQueueMetrixRepository connects to the existing queue_metrix table.
 func NewQueueMetrixRepository(ctx context.Context, config Config) (*QueueMetrixRepository, error) {
 	if !validIdentifier(config.Keyspace) {
 		return nil, fmt.Errorf("invalid Cassandra keyspace")
@@ -33,37 +33,7 @@ func NewQueueMetrixRepository(ctx context.Context, config Config) (*QueueMetrixR
 	if err != nil {
 		return nil, fmt.Errorf("connect to Cassandra: %w", err)
 	}
-	repository := &QueueMetrixRepository{session: session}
-	if err := repository.ensureSchema(ctx); err != nil {
-		session.Close()
-		return nil, err
-	}
-	return repository, nil
-}
-
-func (repository *QueueMetrixRepository) ensureSchema(ctx context.Context) error {
-	query := `CREATE TABLE IF NOT EXISTS ` + queueMetrixTable + ` (
-		reference_id text PRIMARY KEY,
-		activity_type text,
-		action_type text,
-		operator_code text,
-		schedule_code text,
-		trip_code text,
-		from_station text,
-		to_station text,
-		travel_date text,
-		zone text,
-		queue_status text,
-		queued_at timestamp,
-		completed_at timestamp,
-		dead_lettered_at timestamp,
-		failure_message text,
-		updated_at timestamp
-	)`
-	if err := repository.session.Query(query).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("create Cassandra queue metrix table: %w", err)
-	}
-	return nil
+	return &QueueMetrixRepository{session: session}, nil
 }
 
 // SaveReceived creates the lifecycle record before Worker job publication.
@@ -71,12 +41,12 @@ func (repository *QueueMetrixRepository) SaveReceived(ctx context.Context, metri
 	query := `INSERT INTO ` + queueMetrixTable + `
 		(reference_id, activity_type, action_type, operator_code, schedule_code, trip_code,
 		from_station, to_station, travel_date, zone, queue_status,
-		failure_message, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		queued_at, completed_at, dead_lettered_at, failure_message, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if err := repository.session.Query(query, metric.ReferenceID, metric.ActivityType, metric.ActionType,
 		metric.OperatorCode, metric.ScheduleCode, metric.TripCode, metric.SourceStationCode,
 		metric.DestinationStationCode, metric.TravelDate, metric.Zone, metric.QueueStatus,
-		metric.FailureMessage, metric.UpdatedAt).WithContext(ctx).Exec(); err != nil {
+		nil, nil, nil, metric.FailureMessage, metric.UpdatedAt).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("save queue metrix received record: %w", err)
 	}
 	return nil
@@ -118,4 +88,27 @@ func (repository *QueueMetrixRepository) MarkDead(ctx context.Context, metric do
 // Close closes the Cassandra connection.
 func (repository *QueueMetrixRepository) Close() {
 	repository.session.Close()
+}
+
+// List returns a bounded page of queue lifecycle records for the report UI.
+func (repository *QueueMetrixRepository) List(ctx context.Context, limit int) ([]domain.QueueMetrix, error) {
+	query := `SELECT reference_id, activity_type, action_type, operator_code, schedule_code, trip_code,
+		from_station, to_station, travel_date, zone, queue_status, queued_at, completed_at,
+		dead_lettered_at, failure_message, updated_at FROM ` + queueMetrixTable + ` LIMIT ?`
+	iter := repository.session.Query(query, limit).PageSize(limit).WithContext(ctx).Iter()
+	jobs := make([]domain.QueueMetrix, 0, limit)
+	for {
+		var job domain.QueueMetrix
+		if !iter.Scan(&job.ReferenceID, &job.ActivityType, &job.ActionType, &job.OperatorCode,
+			&job.ScheduleCode, &job.TripCode, &job.SourceStationCode, &job.DestinationStationCode,
+			&job.TravelDate, &job.Zone, &job.QueueStatus, &job.QueuedAt, &job.CompletedAt,
+			&job.DeadLetteredAt, &job.FailureMessage, &job.UpdatedAt) {
+			break
+		}
+		jobs = append(jobs, job)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("list queue metrix records: %w", err)
+	}
+	return jobs, nil
 }

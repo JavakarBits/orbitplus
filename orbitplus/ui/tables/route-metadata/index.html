@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Route Metadata | OrbitPlus Master</title><link rel="stylesheet" href="/orbitplus/styles.css">
+</head>
+<body>
+  <header class="report-header"><a class="brand" href="/orbitplus/">OrbitPlus <span>Master</span></a><nav class="page-nav"><a href="/orbitplus/tables">Tables</a><a href="/orbitplus/reports/queue-jobs">Queue Metrics</a></nav></header>
+  <main class="report-shell"><div class="report-title"><div><p class="eyebrow">TABLES</p><h1>Route Metadata</h1></div></div>
+    <form class="lookup-form" id="lookup-form"><label>Operator<input name="operator" required></label><label>Travel date<input name="travel" type="date" required></label><label>From<input name="from" required></label><label>To<input name="to" required></label><button class="primary-button" type="submit">Look up metadata</button></form>
+    <section class="report-table" aria-label="Route metadata"><div class="table-scroll"><table><thead><tr><th>Operator</th><th>Travel Date</th><th>From</th><th>To</th><th>Trip Code</th><th>Trip Stage Code</th><th>Updated At</th></tr></thead><tbody id="metadata-body"></tbody></table></div></section>
+  </main>
+  <script>
+    const form = document.getElementById("lookup-form"), body = document.getElementById("metadata-body");
+    const value = (item) => item || "—";
+    function empty(title, detail) { body.replaceChildren(); const row = document.createElement("tr"), cell = document.createElement("td"), heading = document.createElement("strong"), message = document.createElement("span"); cell.colSpan = 7; cell.className = "empty-state"; heading.textContent = title; message.textContent = detail; cell.append(heading, message); row.append(cell); body.append(row); }
+    function render(rows) { if (!rows.length) return empty("No route metadata found", "No rows match this complete route key."); body.replaceChildren(); rows.forEach((item) => { const row = document.createElement("tr"); [item.operatorCode, item.travelDate, item.fromStation, item.toStation, item.tripCode, item.tripStageCode, item.updatedAt ? new Date(item.updatedAt).toLocaleString() : "—"].forEach((value) => { const cell = document.createElement("td"); cell.textContent = value || "—"; row.append(cell); }); body.append(row); }); }
+    form.addEventListener("submit", (event) => { event.preventDefault(); const query = new URLSearchParams(new FormData(form)); fetch("/orbitplus/api/tables/route-metadata?" + query, { credentials: "same-origin" }).then((response) => response.ok ? response.json() : Promise.reject()).then((response) => render(response.data || [])).catch(() => empty("Unable to load route metadata", "Check the required lookup values and Cassandra connection.")); });
+    empty("Enter a route lookup", "Operator, travel date, from, and to are required.");
+  </script>
+</body>
+</html>

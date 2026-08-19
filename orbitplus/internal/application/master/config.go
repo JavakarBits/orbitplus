@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // AppEnvironment identifies the deployment environment the process runs in.
@@ -16,10 +17,12 @@ const (
 
 // RuntimeConfig is the service runtime configuration.
 type RuntimeConfig struct {
-	AppEnvironment AppEnvironment
-	APIPort        int
-	Storage        *StorageConfig
-	Queue          *QueueConfig
+	AppEnvironment          AppEnvironment
+	APIPort                 int
+	UIAccessToken           string
+	Storage                 *StorageConfig
+	Queue                   *QueueConfig
+	PeriodicRefreshInterval time.Duration
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment
@@ -47,6 +50,7 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		}
 		config.APIPort = port
 	}
+	config.UIAccessToken = os.Getenv("ORBITPLUS_UI_ACCESS_TOKEN")
 
 	persistence, err := loadStorageConfig()
 	if err != nil {
@@ -58,6 +62,19 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	config.Queue = queue
+	if value := os.Getenv("PERIODIC_REFRESH_INTERVAL"); value != "" {
+		interval, err := time.ParseDuration(value)
+		if err != nil || interval <= 0 {
+			return RuntimeConfig{}, fmt.Errorf("PERIODIC_REFRESH_INTERVAL must be a positive duration")
+		}
+		if config.Storage == nil {
+			return RuntimeConfig{}, fmt.Errorf("PERIODIC_REFRESH_INTERVAL requires Cassandra/storage configuration")
+		}
+		if config.Queue == nil {
+			return RuntimeConfig{}, fmt.Errorf("PERIODIC_REFRESH_INTERVAL requires RabbitMQ configuration")
+		}
+		config.PeriodicRefreshInterval = interval
+	}
 	return config, nil
 }
 

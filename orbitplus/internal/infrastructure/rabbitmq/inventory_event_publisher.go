@@ -42,8 +42,17 @@ func NewInventoryEventPublisher(url, exchange string) (*InventoryEventPublisher,
 	return &InventoryEventPublisher{connection: connection, channel: channel, confirmations: confirmations, channelErrors: channelErrors, exchange: exchange}, nil
 }
 
-// PublishInventoryEvent publishes an accepted event with the refresh routing key.
+// PublishInventoryEvent publishes an Orionmax event at its fixed highest priority.
 func (publisher *InventoryEventPublisher) PublishInventoryEvent(ctx context.Context, referenceID string, payload []byte) error {
+	return publisher.publish(ctx, referenceID, payload, 10)
+}
+
+// PublishPeriodicRefreshEvent publishes a periodic route refresh using its ticket-count priority.
+func (publisher *InventoryEventPublisher) PublishPeriodicRefreshEvent(ctx context.Context, referenceID string, payload []byte, ticketCount int) error {
+	return publisher.publish(ctx, referenceID, payload, periodicRefreshPriority(ticketCount))
+}
+
+func (publisher *InventoryEventPublisher) publish(ctx context.Context, referenceID string, payload []byte, priority uint8) error {
 	publisher.mutex.Lock()
 	defer publisher.mutex.Unlock()
 
@@ -51,7 +60,7 @@ func (publisher *InventoryEventPublisher) PublishInventoryEvent(ctx context.Cont
 		ContentType:   "application/json",
 		DeliveryMode:  amqp.Persistent,
 		Timestamp:     time.Now().UTC(),
-		Priority:      10,
+		Priority:      priority,
 		MessageId:     referenceID,
 		CorrelationId: referenceID,
 		Body:          payload,
@@ -72,6 +81,23 @@ func (publisher *InventoryEventPublisher) PublishInventoryEvent(ctx context.Cont
 		return fmt.Errorf("RabbitMQ channel closed before confirmation")
 	case <-ctx.Done():
 		return fmt.Errorf("wait for RabbitMQ publish confirmation: %w", ctx.Err())
+	}
+}
+
+func periodicRefreshPriority(ticketCount int) uint8 {
+	switch {
+	case ticketCount <= 0:
+		return 1
+	case ticketCount <= 5:
+		return 2
+	case ticketCount <= 20:
+		return 4
+	case ticketCount <= 50:
+		return 6
+	case ticketCount <= 100:
+		return 8
+	default:
+		return 9
 	}
 }
 

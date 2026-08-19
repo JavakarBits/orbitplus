@@ -104,6 +104,36 @@ func (client *OrbitPlusClient) SendTripDetails(ctx context.Context, request work
 	return worker.OrbitPlusAccepted, nil
 }
 
+func (client *OrbitPlusClient) SendTripDetailsDLQ(ctx context.Context, request worker.TripDetailsDLQRequest) error {
+	body, err := json.Marshal(struct {
+		ReferenceID    string `json:"referenceId"`
+		FailureMessage string `json:"failureMessage"`
+	}{
+		ReferenceID:    request.ReferenceID,
+		FailureMessage: request.FailureMessage,
+	})
+	if err != nil {
+		return fmt.Errorf("encode OrbitPlus DLQ request: %w", err)
+	}
+	requestURL := *client.endpoint
+	requestURL.Path = "/orbitplus/api/tripdetails/dlq"
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build OrbitPlus DLQ request: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "application/json")
+	response, err := client.client.Do(httpRequest)
+	if err != nil {
+		return fmt.Errorf("OrbitPlus DLQ request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("OrbitPlus DLQ returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
 func parseEndpoint(raw string, environment worker.AppEnvironment) (*url.URL, error) {
 	if err := worker.ValidateOrbitPlusURL(raw, environment); err != nil {
 		return nil, err

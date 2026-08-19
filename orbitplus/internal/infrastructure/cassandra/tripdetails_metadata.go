@@ -47,41 +47,7 @@ func NewTripDetailsMetadataRepository(ctx context.Context, config Config) (*Trip
 	if err != nil {
 		return nil, fmt.Errorf("connect to Cassandra: %w", err)
 	}
-	repository := &TripDetailsMetadataRepository{session: session}
-	if err := repository.ensureSchema(ctx); err != nil {
-		session.Close()
-		return nil, err
-	}
-	return repository, nil
-}
-
-func (repository *TripDetailsMetadataRepository) ensureSchema(ctx context.Context) error {
-	routeQuery := `CREATE TABLE IF NOT EXISTS ` + metadataRouteTable + ` (
-		operator_code text,
-		travel_date text,
-		from_station_code text,
-		to_station_code text,
-		trip_code text,
-		trip_stage_code text,
-		updated_at timestamp,
-		PRIMARY KEY ((operator_code, travel_date, from_station_code, to_station_code), trip_code, trip_stage_code)
-	)`
-	if err := repository.session.Query(routeQuery).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("create Cassandra route metadata table: %w", err)
-	}
-	scheduleQuery := `CREATE TABLE IF NOT EXISTS ` + metadataScheduleTable + ` (
-		operator_code text,
-		schedule_code text,
-		travel_date text,
-		trip_code text,
-		trip_stage_code text,
-		updated_at timestamp,
-		PRIMARY KEY ((operator_code, schedule_code, travel_date), trip_code, trip_stage_code)
-	)`
-	if err := repository.session.Query(scheduleQuery).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("create Cassandra schedule metadata table: %w", err)
-	}
-	return nil
+	return &TripDetailsMetadataRepository{session: session}, nil
 }
 
 // SaveRouteMetadata upserts one route-to-trip/stage lookup row.
@@ -94,6 +60,40 @@ func (repository *TripDetailsMetadataRepository) SaveRouteMetadata(ctx context.C
 		return fmt.Errorf("save Cassandra route metadata: %w", err)
 	}
 	return nil
+}
+
+// ListStaleRouteMetadata scans route metadata and returns routes whose latest update predates cutoff.
+func (repository *TripDetailsMetadataRepository) ListStaleRouteMetadata(ctx context.Context, cutoff time.Time) ([]domain.TripDetailsStageMetadata, error) {
+	query := `SELECT operator_code, travel_date, from_station_code, to_station_code, updated_at FROM ` + metadataRouteTable
+	iter := repository.session.Query(query).WithContext(ctx).Iter()
+	latest := make(map[routeMetadataKey]domain.TripDetailsStageMetadata)
+	for {
+		var metadata domain.TripDetailsStageMetadata
+		if !iter.Scan(&metadata.OperatorCode, &metadata.TravelDate, &metadata.FromStationCode, &metadata.ToStationCode, &metadata.UpdatedAt) {
+			break
+		}
+		key := routeMetadataKey{operatorCode: metadata.OperatorCode, travelDate: metadata.TravelDate, fromStation: metadata.FromStationCode, toStation: metadata.ToStationCode}
+		if current, exists := latest[key]; !exists || metadata.UpdatedAt.After(current.UpdatedAt) {
+			latest[key] = metadata
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("list Cassandra route metadata for stale check: %w", err)
+	}
+	results := make([]domain.TripDetailsStageMetadata, 0)
+	for _, metadata := range latest {
+		if metadata.UpdatedAt.Before(cutoff) {
+			results = append(results, metadata)
+		}
+	}
+	return results, nil
+}
+
+type routeMetadataKey struct {
+	operatorCode string
+	travelDate   string
+	fromStation  string
+	toStation    string
 }
 
 // SaveScheduleMetadata upserts one schedule-to-trip/stage lookup row.
