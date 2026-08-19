@@ -49,8 +49,7 @@ func (persistence *TripDetailsStorage) Store(ctx context.Context, value any) err
 
 	actionType := strings.ToUpper(suppliedActionType)
 	if actionType == searchBusMapAction {
-		persistence.logger.Printf("TripDetails persistence skipped: envelope=%s actionType=%q normalizedActionType=%q reason=SEARCHBUSMAP_TODO", envelope, suppliedActionType, actionType)
-		return nil
+		return persistence.storeSearchBusMapEntries(ctx, payload, envelope, operatorCode, suppliedActionType)
 	}
 
 	entries, actionType, inferredBusMap, err := extractEntries(payload, envelope, actionType)
