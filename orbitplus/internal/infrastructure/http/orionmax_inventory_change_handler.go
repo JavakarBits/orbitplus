@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -38,10 +39,29 @@ func (handler *OrionmaxInventoryChangeHandler) ServeHTTP(response http.ResponseW
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid inventory change JSON")
 		return
 	}
-	if handler.service == nil || handler.service.ReceiveInventoryChange(activityType, rawBody) != nil {
-		handler.logger.Print("Orionmax inventory change processing failed")
+	if handler.service == nil {
+		handler.logger.Print("Orionmax inventory change processing failed: service is not configured")
 		writeJSONStatus(response, http.StatusInternalServerError, 0, "Internal server error")
 		return
 	}
+	if err := handler.service.ReceiveInventoryChange(request.Context(), activityType, rawBody); err != nil {
+		handler.writeInventoryError(response, err)
+		return
+	}
 	writeJSONStatus(response, http.StatusOK, 1, "Orionmax inventory change received successfully")
+}
+func (handler *OrionmaxInventoryChangeHandler) writeInventoryError(response http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, master.ErrInventoryActivityTypeMismatch):
+		writeJSONStatus(response, http.StatusBadRequest, 0, "activity_type URL parameter must match payload activity_type")
+	case errors.Is(err, master.ErrUnsupportedInventoryActivity):
+		writeJSONStatus(response, http.StatusBadRequest, 0, "Unsupported activity_type")
+	case errors.Is(err, master.ErrInvalidInventoryEvent):
+		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid inventory event")
+	case errors.Is(err, master.ErrTripCodeUnavailable):
+		writeJSONStatus(response, http.StatusConflict, 0, "Trip code is not available for this schedule")
+	default:
+		handler.logger.Printf("Orionmax inventory change processing failed: %v", err)
+		writeJSONStatus(response, http.StatusInternalServerError, 0, "Internal server error")
+	}
 }

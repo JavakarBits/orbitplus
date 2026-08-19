@@ -6,6 +6,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/orbitplusmaster ./cmd/orbitplusmaster
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/orbitplusmaster /orbitplusmaster
+WORKDIR /app
+COPY --from=build /out/orbitplusmaster /app/orbitplusmaster
+COPY --from=build --chown=nonroot:nonroot /src/ui /app/ui
 USER nonroot:nonroot
-ENTRYPOINT ["/orbitplusmaster"]
+ENTRYPOINT ["/app/orbitplusmaster"]

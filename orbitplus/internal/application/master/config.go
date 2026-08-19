@@ -19,6 +19,7 @@ type RuntimeConfig struct {
 	AppEnvironment AppEnvironment
 	APIPort        int
 	Storage        *StorageConfig
+	Queue          *QueueConfig
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment
@@ -52,6 +53,11 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	config.Storage = persistence
+	queue, err := loadQueueConfig()
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	config.Queue = queue
 	return config, nil
 }
 

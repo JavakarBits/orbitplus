@@ -164,7 +164,7 @@ func main() {
 	log.Print("TripDetailsRefreshWorker starting")
 	runErr := refreshWorker.Run(runContext)
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		log.Print("TripDetailsRefreshWorker stopped unexpectedly")
+		log.Printf("TripDetailsRefreshWorker stopped unexpectedly: %v", runErr)
 		return
 	}
 	if runContext.Err() != nil || errors.Is(runErr, context.Canceled) {

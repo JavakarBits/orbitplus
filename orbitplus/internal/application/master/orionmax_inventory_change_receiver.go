@@ -1,21 +1,93 @@
 package master
 
-import "log"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
 
-// OrionmaxInventoryEventService receives Orionmax inventory-change events
-// before queue publishing is configured.
+	"orbitplusmaster/internal/domain"
+)
+
+const InventoryRefreshRoutingKey = "tripdetails.refresh"
+
+// InventoryEventPublisher publishes one prepared Worker job.
+type InventoryEventPublisher interface {
+	PublishInventoryEvent(context.Context, string, []byte) error
+}
+
+// OrionmaxInventoryEventService receives and converts Orionmax inventory events.
 type OrionmaxInventoryEventService struct {
-	logger *log.Logger
+	logger    *log.Logger
+	publisher InventoryEventPublisher
+	schedules InventoryScheduleReader
+	metrix    QueueMetrixStorage
 }
 
 // NewOrionmaxInventoryEventService constructs an inventory-event receiver.
-func NewOrionmaxInventoryEventService() *OrionmaxInventoryEventService {
-	return &OrionmaxInventoryEventService{logger: log.Default()}
+func NewOrionmaxInventoryEventService(publisher InventoryEventPublisher, schedules InventoryScheduleReader, metrix QueueMetrixStorage) *OrionmaxInventoryEventService {
+	return &OrionmaxInventoryEventService{logger: log.Default(), publisher: publisher, schedules: schedules, metrix: metrix}
 }
 
-// ReceiveInventoryChange records an accepted inventory-change event without
-// logging its payload. Queue publishing is added in a later flow.
-func (service *OrionmaxInventoryEventService) ReceiveInventoryChange(activityType string, rawBody []byte) error {
-	service.logger.Printf("Orionmax inventory change received: activity_type=%q bytes=%d", activityType, len(rawBody))
+// ReceiveInventoryChange logs, records, and publishes one Worker job per data item.
+func (service *OrionmaxInventoryEventService) ReceiveInventoryChange(ctx context.Context, activityType string, rawBody []byte) error {
+	service.logger.Printf("Orionmax inventory change received: activity_type=%q bytes=%d payload=%s", activityType, len(rawBody), rawBody)
+	if service.publisher == nil {
+		return errors.New("inventory event publisher is not configured")
+	}
+	if service.metrix == nil {
+		return errors.New("queue metrix storage is not configured")
+	}
+	actionType, event, err := decodeInventoryRefreshEvent(activityType, rawBody)
+	if err != nil {
+		return err
+	}
+	for _, item := range event.Data {
+		now := time.Now().UTC()
+		metric := newQueueMetrix(activityType, actionType, event.Zone, item, now)
+		if metric.ReferenceID == "" {
+			return ErrInvalidInventoryEvent
+		}
+		if err := service.metrix.SaveReceived(ctx, metric); err != nil {
+			return fmt.Errorf("save queue metrix record: %w", err)
+		}
+		job, err := buildInventoryRefreshJob(ctx, actionType, item, service.schedules, metric)
+		if err != nil {
+			service.markDead(ctx, metric, err)
+			return err
+		}
+		if err := service.publisher.PublishInventoryEvent(ctx, job.Metric.ReferenceID, job.Payload); err != nil {
+			service.markDead(ctx, job.Metric, err)
+			return err
+		}
+		now = time.Now().UTC()
+		job.Metric.QueueStatus = domain.QueueStatusQueued
+		job.Metric.QueuedAt = now
+		job.Metric.UpdatedAt = now
+		if err := service.metrix.MarkQueued(ctx, job.Metric); err != nil {
+			return fmt.Errorf("mark queue metrix queued: %w", err)
+		}
+	}
 	return nil
+}
+
+func (service *OrionmaxInventoryEventService) markDead(ctx context.Context, metric domain.QueueMetrix, cause error) {
+	now := time.Now().UTC()
+	metric.QueueStatus = domain.QueueStatusDead
+	metric.DeadLetteredAt = now
+	metric.FailureMessage = queueMetrixFailureReason(cause)
+	metric.UpdatedAt = now
+	if err := service.metrix.MarkDead(ctx, metric); err != nil {
+		service.logger.Printf("queue metrix dead-state update failed: reference_id=%q error=%v", metric.ReferenceID, err)
+	}
+}
+
+func queueMetrixFailureReason(err error) string {
+	const maxLength = 500
+	message := err.Error()
+	if len(message) > maxLength {
+		return message[:maxLength]
+	}
+	return message
 }

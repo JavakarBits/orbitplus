@@ -14,6 +14,18 @@ func NewRouter(tripDetailsService *master.TripDetailsService, orionmaxInventoryC
 	}
 	readHandler := NewTripDetailsReadHandler(readService)
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(response http.ResponseWriter, request *http.Request) {
+		http.ServeFile(response, request, "ui/index.html")
+	})
+	mux.HandleFunc("GET /reports/queue-jobs", func(response http.ResponseWriter, request *http.Request) {
+		http.ServeFile(response, request, "ui/queue-jobs/index.html")
+	})
+	mux.HandleFunc("GET /reports/queue-jobs/", func(response http.ResponseWriter, request *http.Request) {
+		http.Redirect(response, request, "/reports/queue-jobs", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /styles.css", func(response http.ResponseWriter, request *http.Request) {
+		http.ServeFile(response, request, "ui/styles.css")
+	})
 	mux.Handle("POST /api/tripdetails", NewTripDetailsHandler(tripDetailsService))
 	mux.Handle("POST /api/orionmax/inventory/events", NewOrionmaxInventoryChangeHandler(orionmaxInventoryChangeService))
 	mux.Handle("GET /health", NewHealthHandler())

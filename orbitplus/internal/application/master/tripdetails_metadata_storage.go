@@ -7,15 +7,17 @@ import (
 	"orbitplusmaster/internal/domain"
 )
 
-// TripDetailsMetadataRepository stores Search Stage lookup metadata in Cassandra.
+// TripDetailsMetadataRepository stores Search metadata in Cassandra.
 type TripDetailsMetadataRepository interface {
-	SaveStageMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error
+	SaveRouteMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error
+	SaveScheduleMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error
 }
 
 func (persistence *TripDetailsStorage) storeSearchMetadata(ctx context.Context, operatorCode, tripCode, tripStageCode, travelDate, fromStationCode, toStationCode string, entry map[string]any, index int) error {
 	metadata := domain.TripDetailsStageMetadata{
 		OperatorCode:    operatorCode,
 		TripCode:        tripCode,
+		ScheduleCode:    scheduleCodeFromEntry(entry),
 		TravelDate:      travelDate,
 		FromStationCode: fromStationCode,
 		ToStationCode:   toStationCode,
@@ -23,12 +25,26 @@ func (persistence *TripDetailsStorage) storeSearchMetadata(ctx context.Context, 
 		UpdatedAt:       persistence.now().UTC(),
 	}
 	for _, record := range stageMetadataRecords(metadata, entry) {
-		if err := persistence.metadata.SaveStageMetadata(ctx, record); err != nil {
-			return fmt.Errorf("store TripDetails metadata: %w", err)
+		if err := persistence.metadata.SaveRouteMetadata(ctx, record); err != nil {
+			return fmt.Errorf("store TripDetails route metadata: %w", err)
 		}
 	}
-	persistence.logger.Printf("TripDetails Cassandra metadata write succeeded entry=%d tripStageCode=%q", index, tripStageCode)
+	if metadata.ScheduleCode != "" {
+		if err := persistence.metadata.SaveScheduleMetadata(ctx, metadata); err != nil {
+			return fmt.Errorf("store TripDetails schedule metadata: %w", err)
+		}
+	}
+	persistence.logger.Printf("TripDetails Cassandra metadata write succeeded entry=%d tripStageCode=%q scheduleCode=%q", index, tripStageCode, metadata.ScheduleCode)
 	return nil
+}
+
+func scheduleCodeFromEntry(entry map[string]any) string {
+	for _, key := range []string{"scheduleCode", "schedulecode"} {
+		if value := stringField(entry, key); value != "" {
+			return value
+		}
+	}
+	return nestedStringField(entry, "schedule", "code")
 }
 
 func stageMetadataRecords(base domain.TripDetailsStageMetadata, entry map[string]any) []domain.TripDetailsStageMetadata {

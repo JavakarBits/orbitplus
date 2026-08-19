@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queue Jobs | OrbitPlus Master</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="report-header">
+    <a class="brand" href="/">OrbitPlus <span>Master</span></a>
+    <a class="back-link" href="/">← Home</a>
+  </header>
+  <main class="report-shell">
+    <div class="report-title">
+      <div><p class="eyebrow">REPORTS</p><h1>Queue Jobs</h1></div>
+      <button class="filter-button" type="button" disabled>Filters</button>
+    </div>
+    <div class="report-tabs" aria-label="Queue job status views">
+      <button class="active" type="button">All Jobs</button><button type="button">Queued</button>
+      <button type="button">Completed</button><button type="button">Dead</button>
+    </div>
+    <section class="report-table" aria-label="Queue jobs report">
+      <div class="table-scroll"><table>
+        <thead><tr><th>Reference ID</th><th>Activity Type</th><th>Action Type</th><th>Operator</th><th>From</th><th>To</th><th>Travel Date</th><th>Status</th><th>Queued At</th><th>Completed At</th><th>Failure Message</th></tr></thead>
+        <tbody><tr><td colspan="11" class="empty-state"><strong>No report data loaded</strong><span>Queue Jobs data will appear here when the report API is added.</span></td></tr></tbody>
+      </table></div>
+    </section>
+  </main>
+</body>
+</html>

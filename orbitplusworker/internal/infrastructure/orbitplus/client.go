@@ -41,6 +41,7 @@ func (client *OrbitPlusClient) SendTripDetails(ctx context.Context, request work
 	}
 	payload := struct {
 		ActionType      string          `json:"actionType"`
+		RefID           string          `json:"refid,omitempty"`
 		OperatorCode    string          `json:"operatorCode"`
 		FromCode        string          `json:"fromCode,omitempty"`
 		ToCode          string          `json:"toCode,omitempty"`
@@ -52,6 +53,7 @@ func (client *OrbitPlusClient) SendTripDetails(ctx context.Context, request work
 		OrbitResponse   json.RawMessage `json:"orbitResponse"`
 	}{
 		ActionType:      request.Message.ActionType,
+		RefID:           request.Message.ReferenceID,
 		OperatorCode:    request.Message.OperatorCode,
 		FromCode:        request.Message.FromCode,
 		ToCode:          request.Message.ToCode,

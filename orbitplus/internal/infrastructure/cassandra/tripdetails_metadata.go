@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	metadataTable      = "trip_details_metadata_by_stage"
-	metadataRouteTable = "trip_details_metadata_by_route"
+	metadataRouteTable    = "trip_details_metadata_by_route"
+	metadataScheduleTable = "trip_details_metadata_by_schedule"
 )
 
 // Config contains the Cassandra settings supplied by runtime config.
@@ -56,19 +56,6 @@ func NewTripDetailsMetadataRepository(ctx context.Context, config Config) (*Trip
 }
 
 func (repository *TripDetailsMetadataRepository) ensureSchema(ctx context.Context) error {
-	query := `CREATE TABLE IF NOT EXISTS ` + metadataTable + ` (
-		operator_code text,
-		trip_code text,
-		travel_date text,
-		from_station_code text,
-		to_station_code text,
-		trip_stage_code text,
-		updated_at timestamp,
-		PRIMARY KEY ((operator_code, trip_code, travel_date, from_station_code, to_station_code), trip_stage_code)
-	)`
-	if err := repository.session.Query(query).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("create Cassandra metadata table: %w", err)
-	}
 	routeQuery := `CREATE TABLE IF NOT EXISTS ` + metadataRouteTable + ` (
 		operator_code text,
 		travel_date text,
@@ -82,25 +69,41 @@ func (repository *TripDetailsMetadataRepository) ensureSchema(ctx context.Contex
 	if err := repository.session.Query(routeQuery).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("create Cassandra route metadata table: %w", err)
 	}
+	scheduleQuery := `CREATE TABLE IF NOT EXISTS ` + metadataScheduleTable + ` (
+		operator_code text,
+		schedule_code text,
+		travel_date text,
+		trip_code text,
+		trip_stage_code text,
+		updated_at timestamp,
+		PRIMARY KEY ((operator_code, schedule_code, travel_date), trip_code, trip_stage_code)
+	)`
+	if err := repository.session.Query(scheduleQuery).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("create Cassandra schedule metadata table: %w", err)
+	}
 	return nil
 }
 
-// SaveStageMetadata upserts one Stage lookup row. Its primary key permits many
-// stages for the same route/date while preventing duplicate stage rows.
-func (repository *TripDetailsMetadataRepository) SaveStageMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error {
-	query := `INSERT INTO ` + metadataTable + `
-		(operator_code, trip_code, travel_date, from_station_code, to_station_code, trip_stage_code, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`
-	if err := repository.session.Query(query, metadata.OperatorCode, metadata.TripCode, metadata.TravelDate,
-		metadata.FromStationCode, metadata.ToStationCode, metadata.TripStageCode, metadata.UpdatedAt).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("save Cassandra stage metadata: %w", err)
-	}
+// SaveRouteMetadata upserts one route-to-trip/stage lookup row.
+func (repository *TripDetailsMetadataRepository) SaveRouteMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error {
 	routeQuery := `INSERT INTO ` + metadataRouteTable + `
 		(operator_code, travel_date, from_station_code, to_station_code, trip_code, trip_stage_code, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`
 	if err := repository.session.Query(routeQuery, metadata.OperatorCode, metadata.TravelDate, metadata.FromStationCode,
 		metadata.ToStationCode, metadata.TripCode, metadata.TripStageCode, metadata.UpdatedAt).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("save Cassandra route metadata: %w", err)
+	}
+	return nil
+}
+
+// SaveScheduleMetadata upserts one schedule-to-trip/stage lookup row.
+func (repository *TripDetailsMetadataRepository) SaveScheduleMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error {
+	scheduleQuery := `INSERT INTO ` + metadataScheduleTable + `
+		(operator_code, schedule_code, travel_date, trip_code, trip_stage_code, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`
+	if err := repository.session.Query(scheduleQuery, metadata.OperatorCode, metadata.ScheduleCode, metadata.TravelDate,
+		metadata.TripCode, metadata.TripStageCode, metadata.UpdatedAt).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("save Cassandra schedule metadata: %w", err)
 	}
 	return nil
 }
@@ -144,22 +147,24 @@ func (repository *TripDetailsMetadataRepository) FindStagesByRoute(ctx context.C
 	return results, nil
 }
 
-// FindStagesByTripRoute returns candidate stages for a Busmap route and trip.
-func (repository *TripDetailsMetadataRepository) FindStagesByTripRoute(ctx context.Context, operatorCode, tripCode, fromCode, toCode, travelDate string) ([]domain.TripDetailsStageMetadata, error) {
-	query := `SELECT trip_stage_code, updated_at FROM ` + metadataTable + `
-		WHERE operator_code=? AND trip_code=? AND travel_date=? AND from_station_code=? AND to_station_code=?`
-	iter := repository.session.Query(query, operatorCode, tripCode, travelDate, fromCode, toCode).WithContext(ctx).Iter()
+// FindStagesBySchedule returns candidate stages for one operator schedule and date.
+func (repository *TripDetailsMetadataRepository) FindStagesBySchedule(ctx context.Context, operatorCode, scheduleCode, travelDate string) ([]domain.TripDetailsStageMetadata, error) {
+	query := `SELECT trip_code, trip_stage_code, updated_at FROM ` + metadataScheduleTable + `
+		WHERE operator_code=? AND schedule_code=? AND travel_date=?`
+	iter := repository.session.Query(query, operatorCode, scheduleCode, travelDate).WithContext(ctx).Iter()
 	var results []domain.TripDetailsStageMetadata
 	for {
 		var result domain.TripDetailsStageMetadata
-		if !iter.Scan(&result.TripStageCode, &result.UpdatedAt) {
+		if !iter.Scan(&result.TripCode, &result.TripStageCode, &result.UpdatedAt) {
 			break
 		}
-		result.OperatorCode, result.TripCode, result.FromStationCode, result.ToStationCode, result.TravelDate = operatorCode, tripCode, fromCode, toCode, travelDate
+		result.OperatorCode = operatorCode
+		result.ScheduleCode = scheduleCode
+		result.TravelDate = travelDate
 		results = append(results, result)
 	}
 	if err := iter.Close(); err != nil {
-		return nil, fmt.Errorf("find Cassandra stage metadata: %w", err)
+		return nil, fmt.Errorf("find Cassandra schedule metadata: %w", err)
 	}
 	return results, nil
 }

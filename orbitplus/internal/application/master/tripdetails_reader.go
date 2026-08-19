@@ -27,7 +27,7 @@ type TripDetailsContentReader interface {
 
 type TripDetailsStageReader interface {
 	FindStagesByRoute(context.Context, string, string, string, string) ([]domain.TripDetailsStageMetadata, error)
-	FindStagesByTripRoute(context.Context, string, string, string, string, string) ([]domain.TripDetailsStageMetadata, error)
+	FindStagesBySchedule(context.Context, string, string, string) ([]domain.TripDetailsStageMetadata, error)
 }
 
 type TripDetailsReadService struct {
@@ -55,6 +55,16 @@ func validLookupComponents(values ...string) bool {
 		}
 	}
 	return true
+}
+
+func filterStagesByTripCode(candidates []domain.TripDetailsStageMetadata, tripCode string) []domain.TripDetailsStageMetadata {
+	filtered := make([]domain.TripDetailsStageMetadata, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.TripCode == tripCode {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }
 
 // Search reconstructs every selected persisted stage for a route.
@@ -124,12 +134,14 @@ func (service *TripDetailsReadService) Search(ctx context.Context, lookup RouteL
 // canonical reconstruction behavior.
 func (service *TripDetailsReadService) BusMap(ctx context.Context, lookup RouteLookup) (json.RawMessage, error) {
 	service.logLookup("busmap", lookup)
-	candidates, err := service.metadata.FindStagesByTripRoute(ctx, lookup.OperatorCode, lookup.TripCode, lookup.FromCode, lookup.ToCode, lookup.TravelDate)
+	candidates, err := service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TravelDate)
 	if err != nil {
 		service.logFailure("busmap metadata lookup")
 		return nil, err
 	}
-	service.logCount("busmap metadata candidates", len(candidates))
+	service.logCount("busmap route metadata candidates", len(candidates))
+	candidates = filterStagesByTripCode(candidates, lookup.TripCode)
+	service.logCount("busmap trip metadata candidates", len(candidates))
 	if len(candidates) == 0 {
 		service.logNotFound("busmap", "metadata_empty")
 		return nil, ErrTripDetailsNotFound

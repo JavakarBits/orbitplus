@@ -7,6 +7,7 @@ import "time"
 type TripDetailsStageMetadata struct {
 	OperatorCode    string
 	TripCode        string
+	ScheduleCode    string
 	TravelDate      string
 	FromStationCode string
 	ToStationCode   string

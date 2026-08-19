@@ -85,6 +85,15 @@ Returns basic liveness status.
 {"status":"UP"}
 ```
 
+## Web UI
+
+The embedded static UI provides a minimal two-screen starting point:
+
+- `GET /`: Home page with a link to the Queue Jobs Report.
+- `GET /reports/queue-jobs`: Zoho Creator-style Queue Jobs report shell.
+
+The report is intentionally an empty state until a dedicated queue-metrics reporting API and Cassandra read model are added. It does not display invented or sampled queue data.
+
 ## Docker
 
 ```powershell
@@ -104,3 +113,9 @@ orbitplusworker → Bits Service → orbitplus
 ```
 
 Future phases will add TripDetails processing, cache/storage, Orbit-facing query APIs, duplicate/stale detection, and Worker authentication. See [specs/orbitplus/](specs/orbitplus/) for details.
+
+## Orionmax inventory event publishing
+
+`POST /api/orionmax/inventory/events?activity_type=...` records every Orionmax `data[]` item in Cassandra table `queue_metrix`, then publishes one Worker job per item to the configured RabbitMQ exchange with routing key `tripdetails.refresh`. Set both `RABBITMQ_URL` and `RABBITMQ_EXCHANGE`; the exchange must already be bound to `orbitplus.tripdetails.refresh.worker` for that routing key.
+
+Each Worker job includes `referenceId`, sourced from Orionmax `data[].refid`. The Worker must return the same `referenceId` at the root of its `POST /api/tripdetails` envelope. This transitions the matching metric row from `QUEUED` to `COMPLETED` after TripDetails storage succeeds. Failed job creation, broker publication, or TripDetails storage is recorded as `DEAD`.

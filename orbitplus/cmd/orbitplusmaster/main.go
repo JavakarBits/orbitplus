@@ -10,6 +10,7 @@ import (
 	"orbitplusmaster/internal/infrastructure/cassandra"
 	"orbitplusmaster/internal/infrastructure/dragonfly"
 	masterhttp "orbitplusmaster/internal/infrastructure/http"
+	"orbitplusmaster/internal/infrastructure/rabbitmq"
 )
 
 func main() {
@@ -20,12 +21,23 @@ func main() {
 	}
 	log.Printf("orbitplusmaster configuration loaded: APP_ENV=%s MASTER_API_PORT=%d", config.AppEnvironment, config.APIPort)
 
-	tripDetailsService, readService, closePersistence, err := newMasterServices(config)
+	tripDetailsService, readService, metadata, metrix, closePersistence, err := newMasterServices(config)
 	if err != nil {
 		log.Fatalf("initialize TripDetails persistence: %v", err)
 	}
 	defer closePersistence()
-	orionmaxInventoryChangeService := master.NewOrionmaxInventoryEventService()
+	var inventoryPublisher master.InventoryEventPublisher
+	closeInventoryPublisher := func() {}
+	if config.Queue != nil {
+		publisher, err := rabbitmq.NewInventoryEventPublisher(config.Queue.URL, config.Queue.Exchange)
+		if err != nil {
+			log.Fatalf("initialize RabbitMQ inventory event publisher: %v", err)
+		}
+		inventoryPublisher = publisher
+		closeInventoryPublisher = func() { _ = publisher.Close() }
+	}
+	defer closeInventoryPublisher()
+	orionmaxInventoryChangeService := master.NewOrionmaxInventoryEventService(inventoryPublisher, metadata, metrix)
 	router := masterhttp.NewRouter(tripDetailsService, orionmaxInventoryChangeService, readService)
 	server := &http.Server{Addr: config.Address(), Handler: router}
 	log.Printf("orbitplusmaster listening on %s", config.Address())
@@ -34,10 +46,10 @@ func main() {
 	}
 }
 
-func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService, *master.TripDetailsReadService, func(), error) {
+func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService, *master.TripDetailsReadService, *cassandra.TripDetailsMetadataRepository, *cassandra.QueueMetrixRepository, func(), error) {
 	if config.Storage == nil {
-		log.Print("TripDetails persistence disabled: ingestion is log-only and persisted reads are unavailable")
-		return master.NewTripDetailsService(), nil, func() {}, nil
+		log.Print("TripDetails persistence and queue metrix tracking are disabled: ingestion is log-only and persisted reads are unavailable")
+		return master.NewTripDetailsService(), nil, nil, nil, func() {}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), config.Storage.Cassandra.Timeout)
 	defer cancel()
@@ -46,19 +58,26 @@ func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService,
 		Database: config.Storage.Dragonfly.Database, DialTimeout: config.Storage.Dragonfly.DialTimeout,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	metadata, err := cassandra.NewTripDetailsMetadataRepository(ctx, cassandra.Config{
+	cassandraConfig := cassandra.Config{
 		Hosts: config.Storage.Cassandra.Hosts, Port: config.Storage.Cassandra.Port,
 		Keyspace: config.Storage.Cassandra.Keyspace, Username: config.Storage.Cassandra.Username,
 		Password: config.Storage.Cassandra.Password, Timeout: config.Storage.Cassandra.Timeout,
-	})
+	}
+	metadata, err := cassandra.NewTripDetailsMetadataRepository(ctx, cassandraConfig)
 	if err != nil {
 		_ = cache.Close()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
+	}
+	metrix, err := cassandra.NewQueueMetrixRepository(ctx, cassandraConfig)
+	if err != nil {
+		metadata.Close()
+		_ = cache.Close()
+		return nil, nil, nil, nil, nil, err
 	}
 	persistence := master.NewTripDetailsStorageWithLogger(cache, metadata, log.Default())
 	readService := master.NewTripDetailsReadService(cache, metadata, log.Default())
-	closePersistence := func() { metadata.Close(); _ = cache.Close() }
-	return master.NewTripDetailsServiceWithStorage(log.Default(), persistence), readService, closePersistence, nil
+	closePersistence := func() { metrix.Close(); metadata.Close(); _ = cache.Close() }
+	return master.NewTripDetailsServiceWithStorageAndMetrix(log.Default(), persistence, metrix), readService, metadata, metrix, closePersistence, nil
 }

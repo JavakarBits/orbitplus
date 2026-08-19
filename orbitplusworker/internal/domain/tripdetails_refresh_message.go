@@ -10,6 +10,7 @@ import (
 // TripDetails refresh. Source credentials are deliberately excluded.
 type TripDetailsRefreshMessage struct {
 	ActionType      string `json:"actionType"`
+	ReferenceID     string `json:"referenceId"`
 	OperatorCode    string `json:"operatorCode"`
 	FromCode        string `json:"fromCode"`
 	ToCode          string `json:"toCode"`

@@ -12,7 +12,7 @@
         "header": [{ "key": "Content-Type", "value": "application/json" }],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"actionType\": \"search\",\n  \"operatorCode\": \"bits\",\n  \"fromCode\": \"STF17D52\",\n  \"toCode\": \"STF17D51\",\n  \"tripDate\": \"2026-08-20\",\n  \"orbitResponse\": {\n    \"status\": 1,\n    \"data\": [{\n      \"tripCode\": \"2N38731S260820D\",\n      \"tripStageCode\": \"2N38731S260820D2T1\",\n      \"travelDate\": \"2026-08-20\",\n      \"fromStation\": { \"code\": \"STF17D52\" },\n      \"toStation\": { \"code\": \"STF17D51\" }\n    }]\n  }\n}",
+          "raw": "{\n  \"referenceId\": \"ed1a859fee57\",\n  \"actionType\": \"search\",\n  \"operatorCode\": \"bits\",\n  \"fromCode\": \"STF17D52\",\n  \"toCode\": \"STF17D51\",\n  \"tripDate\": \"2026-08-20\",\n  \"orbitResponse\": {\n    \"status\": 1,\n    \"data\": [{\n      \"tripCode\": \"2N38731S260820D\",\n      \"tripStageCode\": \"2N38731S260820D2T1\",\n      \"travelDate\": \"2026-08-20\",\n      \"fromStation\": { \"code\": \"STF17D52\" },\n      \"toStation\": { \"code\": \"STF17D51\" }\n    }]\n  }\n}",
           "options": { "raw": { "language": "json" } }
         },
         "url": "http://localhost:8082/api/tripdetails"
@@ -25,10 +25,10 @@
         "header": [{ "key": "Content-Type", "value": "application/json" }],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"messageId\": \"example-inventory-change-001\",\n  \"data\": {}\n}",
+          "raw": "{\n  \"action_type\": \"SEARCH_Q3\",\n  \"activity_type\": \"daily-job\",\n  \"data\": [\n    {\n      \"refid\": \"ed1a859fee57\",\n      \"doj\": \"2026-09-04 00:00:00\",\n      \"source\": \"STF2CD129\",\n      \"destination\": \"ST1984513H\",\n      \"operatorcode\": \"aonetrans\",\n      \"type\": \"SEARCH\",\n      \"schedulecode\": \"NA\"\n    }\n  ],\n  \"zone\": \"r3bits\"\n}",
           "options": { "raw": { "language": "json" } }
         },
-        "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=inventory_change"
+        "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=daily-job"
       }
     },
     { "name": "GET Health", "request": { "method": "GET", "url": "http://localhost:8082/health" } },

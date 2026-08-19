@@ -83,14 +83,14 @@ func (consumer *RabbitMQConsumer) Consume(ctx context.Context) (<-chan worker.Ra
 	if err := channel.Qos(consumer.config.Prefetch, 0, false); err != nil {
 		return closeOnError("configure RabbitMQ prefetch", err)
 	}
-	if _, err := channel.QueueDeclare(consumer.config.Queue, true, false, false, false, nil); err != nil {
-		return closeOnError("declare and validate RabbitMQ queue", err)
+	// RabbitMQ topology is provisioned outside this Worker. Passive declarations
+	// verify that the configured resources exist without creating or modifying
+	// queues, exchanges, bindings, or their arguments.
+	if _, err := channel.QueueDeclarePassive(consumer.config.Queue, true, false, false, false, nil); err != nil {
+		return closeOnError("verify configured RabbitMQ queue", err)
 	}
-	if err := channel.ExchangeDeclare(consumer.config.Exchange, amqp.ExchangeDirect, true, false, false, false, nil); err != nil {
-		return closeOnError("declare and validate RabbitMQ exchange", err)
-	}
-	if err := channel.QueueBind(consumer.config.Queue, consumer.config.RoutingKey, consumer.config.Exchange, false, nil); err != nil {
-		return closeOnError("bind RabbitMQ queue", err)
+	if err := channel.ExchangeDeclarePassive(consumer.config.Exchange, amqp.ExchangeDirect, true, false, false, false, nil); err != nil {
+		return closeOnError("verify configured RabbitMQ exchange", err)
 	}
 	consumerTag := "trip-details-refresh-worker"
 	deliveries, err := channel.Consume(consumer.config.Queue, consumerTag, false, false, false, false, nil)
