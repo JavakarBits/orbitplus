@@ -67,18 +67,18 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 
 	credential, err := worker.temporaryCredential(message)
 	if err != nil {
-		return worker.reportFailure(ctx, delivery, message, ExecutionCredentialError)
+		return worker.reportFailure(ctx, delivery, message, ExecutionCredentialError, "Bits credential construction failed.")
 	}
 	sourceResult, err := worker.fetchTripDetails(ctx, message, credential)
 	if err != nil {
-		return worker.reportFailure(ctx, delivery, message, ExecutionSourceError)
+		return worker.reportFailure(ctx, delivery, message, ExecutionSourceError, "Bits request failed or returned an empty response.")
 	}
 	orbitPlusStatus, err := worker.pushTripDetails(ctx, message, sourceResult)
 	if err != nil {
-		return worker.reportFailure(ctx, delivery, message, ExecutionOrbitPlusError)
+		return worker.reportFailure(ctx, delivery, message, ExecutionOrbitPlusError, "OrbitPlus TripDetails request failed.")
 	}
 	if !orbitPlusStatus.AcknowledgementEligible() {
-		return worker.reportFailure(ctx, delivery, message, ExecutionOrbitPlusOutcome, orbitPlusStatus)
+		return worker.reportFailure(ctx, delivery, message, ExecutionOrbitPlusOutcome, "OrbitPlus TripDetails returned a retryable response.", orbitPlusStatus)
 	}
 
 	slog.Info("RabbitMQ acknowledgement started", "actionType", message.ActionType, "operator", message.OperatorCode, "status", orbitPlusStatus)
@@ -90,8 +90,8 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	return ExecutionResult{Status: ExecutionAcknowledged, OrbitPlusStatus: orbitPlusStatus, Acknowledged: true}
 }
 
-func (worker *TripDetailsRefreshWorker) reportFailure(ctx context.Context, delivery RabbitMQDelivery, message domain.TripDetailsRefreshMessage, failureStatus ExecutionStatus, orbitPlusStatus ...OrbitPlusStatus) ExecutionResult {
-	failureMessage := fmt.Sprintf("Worker could not process the %s job after a failed processing attempt", message.ActionType)
+func (worker *TripDetailsRefreshWorker) reportFailure(ctx context.Context, delivery RabbitMQDelivery, message domain.TripDetailsRefreshMessage, failureStatus ExecutionStatus, failureDetail string, orbitPlusStatus ...OrbitPlusStatus) ExecutionResult {
+	failureMessage := fmt.Sprintf("Worker could not process the %s job: %s", message.ActionType, failureDetail)
 	slog.Info("OrbitPlus DLQ report started", "actionType", message.ActionType, "operator", message.OperatorCode, "failureStatus", failureStatus)
 	if err := worker.orbitPlusClient.SendTripDetailsDLQ(ctx, TripDetailsDLQRequest{
 		ReferenceID:    message.ReferenceID,
