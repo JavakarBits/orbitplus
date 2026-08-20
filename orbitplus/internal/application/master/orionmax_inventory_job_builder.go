@@ -72,7 +72,7 @@ func decodeInventoryRefreshEvent(activityType string, rawBody []byte) (string, o
 
 func newQueueMetrix(activityType, actionType, zone string, item orionmaxInventoryItem, now time.Time) domain.QueueMetrix {
 	return domain.QueueMetrix{
-		ReferenceID: item.ReferenceID, ActivityType: activityType, ActionType: actionType,
+		ActivityType: activityType, ActionType: actionType,
 		OperatorCode: item.OperatorCode, ScheduleCode: item.ScheduleCode, TripCode: strings.TrimSpace(item.TripCode),
 		SourceStationCode:      item.Source,
 		DestinationStationCode: item.Destination, TripDate: metricTripDate(item.DOJ), Zone: zone,

@@ -40,13 +40,13 @@ func NewQueueMetrixRepository(ctx context.Context, config Config) (*QueueMetrixR
 // SaveReceived creates the lifecycle record before Worker job publication.
 func (repository *QueueMetrixRepository) SaveReceived(ctx context.Context, metric domain.QueueMetrix) error {
 	query := `INSERT INTO ` + queueMetrixTable + `
-		(reference_id, activity_type, action_type, operator_code, schedule_code, trip_code,
-		from_station, to_station, travel_date, zone, message, queue_status,
+		(queue_id, activity_type, action_type, operator_code, schedule_code, trip_code,
+		from_station, to_station, trip_date, zone, queue_status,
 		queued_at, completed_at, dead_lettered_at, failure_message, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	if err := repository.session.Query(query, metric.ReferenceID, metric.ActivityType, metric.ActionType,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if err := repository.session.Query(query, metric.QueueID, metric.ActivityType, metric.ActionType,
 		metric.OperatorCode, metric.ScheduleCode, metric.TripCode, metric.SourceStationCode,
-		metric.DestinationStationCode, metric.TripDate, metric.Zone, string(metric.WorkerPayload), metric.QueueStatus,
+		metric.DestinationStationCode, metric.TripDate, metric.Zone, metric.QueueStatus,
 		nil, nil, nil, metric.FailureMessage, metric.UpdatedAt).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("save queue metrix received record: %w", err)
 	}
@@ -55,10 +55,10 @@ func (repository *QueueMetrixRepository) SaveReceived(ctx context.Context, metri
 
 // MarkQueued records a broker-confirmed publication.
 func (repository *QueueMetrixRepository) MarkQueued(ctx context.Context, metric domain.QueueMetrix) error {
-	query := `UPDATE ` + queueMetrixTable + ` SET queue_status=?, trip_code=?, travel_date=?,
-		queued_at=?, failure_message=?, updated_at=? WHERE reference_id=?`
+	query := `UPDATE ` + queueMetrixTable + ` SET queue_status=?, trip_code=?, trip_date=?,
+		queued_at=?, failure_message=?, updated_at=? WHERE queue_id=?`
 	if err := repository.session.Query(query, metric.QueueStatus, metric.TripCode, metric.TripDate,
-		metric.QueuedAt, metric.FailureMessage, metric.UpdatedAt, metric.ReferenceID).WithContext(ctx).Exec(); err != nil {
+		metric.QueuedAt, metric.FailureMessage, metric.UpdatedAt, metric.QueueID).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("mark queue metrix queued: %w", err)
 	}
 	return nil
@@ -66,10 +66,10 @@ func (repository *QueueMetrixRepository) MarkQueued(ctx context.Context, metric 
 
 // MarkCompleted records a successfully persisted Worker response.
 func (repository *QueueMetrixRepository) MarkCompleted(ctx context.Context, metric domain.QueueMetrix) error {
-	query := `UPDATE ` + queueMetrixTable + ` SET queue_status=?, completed_at=?, trip_codes=?,
-		failure_message=?, updated_at=? WHERE reference_id=?`
-	if err := repository.session.Query(query, metric.QueueStatus, metric.CompletedAt, metric.UpdatedTripCodes,
-		metric.FailureMessage, metric.UpdatedAt, metric.ReferenceID).WithContext(ctx).Exec(); err != nil {
+	query := `UPDATE ` + queueMetrixTable + ` SET queue_status=?, completed_at=?,
+		failure_message=?, updated_at=? WHERE queue_id=?`
+	if err := repository.session.Query(query, metric.QueueStatus, metric.CompletedAt,
+		metric.FailureMessage, metric.UpdatedAt, metric.QueueID).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("mark queue metrix completed: %w", err)
 	}
 	return nil
@@ -78,14 +78,9 @@ func (repository *QueueMetrixRepository) MarkCompleted(ctx context.Context, metr
 // MarkDead records a build, publish, or persistence failure.
 func (repository *QueueMetrixRepository) MarkDead(ctx context.Context, metric domain.QueueMetrix) error {
 	query := `UPDATE ` + queueMetrixTable + ` SET queue_status=?, dead_lettered_at=?,
-		failure_message=?, updated_at=? WHERE reference_id=?`
-	arguments := []any{metric.QueueStatus, metric.DeadLetteredAt, metric.FailureMessage, metric.UpdatedAt, metric.ReferenceID}
-	if len(metric.UpdatedTripCodes) > 0 {
-		query = `UPDATE ` + queueMetrixTable + ` SET queue_status=?, dead_lettered_at=?, trip_codes=?,
-			failure_message=?, updated_at=? WHERE reference_id=?`
-		arguments = []any{metric.QueueStatus, metric.DeadLetteredAt, metric.UpdatedTripCodes, metric.FailureMessage, metric.UpdatedAt, metric.ReferenceID}
-	}
-	if err := repository.session.Query(query, arguments...).WithContext(ctx).Exec(); err != nil {
+		failure_message=?, updated_at=? WHERE queue_id=?`
+	if err := repository.session.Query(query, metric.QueueStatus, metric.DeadLetteredAt,
+		metric.FailureMessage, metric.UpdatedAt, metric.QueueID).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("mark queue metrix dead: %w", err)
 	}
 	return nil
@@ -98,14 +93,14 @@ func (repository *QueueMetrixRepository) Close() {
 
 // List returns a bounded page of queue lifecycle records for the report UI.
 func (repository *QueueMetrixRepository) List(ctx context.Context, limit int) ([]domain.QueueMetrix, error) {
-	query := `SELECT reference_id, activity_type, action_type, operator_code, schedule_code, trip_code,
-		from_station, to_station, travel_date, zone, queue_status, queued_at, completed_at,
+	query := `SELECT queue_id, activity_type, action_type, operator_code, schedule_code, trip_code,
+		from_station, to_station, trip_date, zone, queue_status, queued_at, completed_at,
 		dead_lettered_at, failure_message, updated_at FROM ` + queueMetrixTable + ` LIMIT ?`
 	iter := repository.session.Query(query, limit).PageSize(limit).WithContext(ctx).Iter()
 	jobs := make([]domain.QueueMetrix, 0, limit)
 	for {
 		var job domain.QueueMetrix
-		if !iter.Scan(&job.ReferenceID, &job.ActivityType, &job.ActionType, &job.OperatorCode,
+		if !iter.Scan(&job.QueueID, &job.ActivityType, &job.ActionType, &job.OperatorCode,
 			&job.ScheduleCode, &job.TripCode, &job.SourceStationCode, &job.DestinationStationCode,
 			&job.TripDate, &job.Zone, &job.QueueStatus, &job.QueuedAt, &job.CompletedAt,
 			&job.DeadLetteredAt, &job.FailureMessage, &job.UpdatedAt) {

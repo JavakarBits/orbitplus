@@ -46,7 +46,7 @@ func (service *OrionmaxInventoryEventService) ReceiveInventoryChange(ctx context
 	for _, item := range event.Data {
 		now := time.Now().UTC()
 		metric := newQueueMetrix(activityType, actionType, event.Zone, item, now)
-		if metric.ReferenceID == "" {
+		if metric.QueueID == "" {
 			return ErrInvalidInventoryEvent
 		}
 		job, err := buildInventoryRefreshJob(ctx, actionType, item, service.schedules, metric)
@@ -82,7 +82,7 @@ func (service *OrionmaxInventoryEventService) markDead(ctx context.Context, metr
 	metric.FailureMessage = queueMetrixFailureReason(cause)
 	metric.UpdatedAt = now
 	if err := service.metrix.MarkDead(ctx, metric); err != nil {
-		service.logger.Printf("queue metrix dead-state update failed: reference_id=%q error=%v", metric.ReferenceID, err)
+		service.logger.Printf("queue metrix dead-state update failed: queue_id=%q error=%v", metric.QueueID, err)
 	}
 }
 

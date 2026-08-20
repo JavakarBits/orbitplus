@@ -16,6 +16,7 @@ import (
 
 	"orbitplusworker/internal/application/worker"
 	"orbitplusworker/internal/infrastructure/bits"
+	"orbitplusworker/internal/infrastructure/logging"
 	"orbitplusworker/internal/infrastructure/orbit"
 	"orbitplusworker/internal/infrastructure/orbitplus"
 	"orbitplusworker/internal/infrastructure/rabbitmq"
@@ -78,6 +79,22 @@ func startHealthServer(config worker.HealthAPIConfig, readiness *worker.Readines
 }
 
 func main() {
+	loggingConfig, err := logging.LoadConfig("logs/orbitplusworker.log")
+	if err != nil {
+		log.Fatalf("invalid logging configuration: %v", err)
+	}
+	closeLogFile, err := logging.Setup(loggingConfig)
+	if err != nil {
+		log.Fatalf("cannot initialize log file: %v", err)
+	}
+	defer func() {
+		if err := closeLogFile(); err != nil {
+			fmt.Fprintf(os.Stderr, "close log file: %v\n", err)
+		}
+	}()
+	log.Printf("log file configured: path=%s max_age_days=%d max_size_mb=%d compress=%t",
+		loggingConfig.FilePath, loggingConfig.MaxAgeDays, loggingConfig.MaxSizeMB, loggingConfig.Compress)
+
 	log.Print("beginning tripdetails refresh worker startup")
 	config, err := worker.LoadRuntimeConfig()
 	if err != nil {

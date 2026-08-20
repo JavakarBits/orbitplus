@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"orbitplusmaster/internal/infrastructure/cassandra"
 	"orbitplusmaster/internal/infrastructure/dragonfly"
 	masterhttp "orbitplusmaster/internal/infrastructure/http"
+	"orbitplusmaster/internal/infrastructure/logging"
 	"orbitplusmaster/internal/infrastructure/rabbitmq"
 )
 
