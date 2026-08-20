@@ -21,24 +21,6 @@ func NewTablesHandler(service *master.TablesService) *TablesHandler {
 	return &TablesHandler{service: service, logger: log.Default()}
 }
 
-// ServePeriodicRefreshRoutes returns active and inactive periodic refresh routes.
-func (handler *TablesHandler) ServePeriodicRefreshRoutes(response http.ResponseWriter, request *http.Request) {
-	if handler.service == nil {
-		writeJSONStatus(response, http.StatusServiceUnavailable, 0, "Tables reporting is not configured")
-		return
-	}
-	routes, err := handler.service.ListPeriodicRefreshRoutes(request.Context())
-	if err != nil {
-		handler.writeError(response, "periodic refresh routes", err)
-		return
-	}
-	items := make([]periodicRefreshRouteItem, 0, len(routes))
-	for _, route := range routes {
-		items = append(items, newPeriodicRefreshRouteItem(route))
-	}
-	writeJSONData(response, items)
-}
-
 // ServeRouteMetadata returns metadata for a required route partition.
 func (handler *TablesHandler) ServeRouteMetadata(response http.ResponseWriter, request *http.Request) {
 	lookup := master.RouteMetadataLookup{
@@ -47,7 +29,7 @@ func (handler *TablesHandler) ServeRouteMetadata(response http.ResponseWriter, r
 		FromCode:     request.URL.Query().Get("from"),
 		ToCode:       request.URL.Query().Get("to"),
 	}
-	handler.serveMetadata(response, request, "route metadata", func() ([]domain.TripDetailsStageMetadata, error) {
+	handler.serveMetadata(response, "route metadata", func() ([]domain.TripDetailsStageMetadata, error) {
 		return handler.service.FindRouteMetadata(request.Context(), lookup)
 	})
 }
@@ -59,12 +41,12 @@ func (handler *TablesHandler) ServeScheduleMetadata(response http.ResponseWriter
 		ScheduleCode: request.URL.Query().Get("schedule"),
 		TravelDate:   request.URL.Query().Get("travel"),
 	}
-	handler.serveMetadata(response, request, "schedule metadata", func() ([]domain.TripDetailsStageMetadata, error) {
+	handler.serveMetadata(response, "schedule metadata", func() ([]domain.TripDetailsStageMetadata, error) {
 		return handler.service.FindScheduleMetadata(request.Context(), lookup)
 	})
 }
 
-func (handler *TablesHandler) serveMetadata(response http.ResponseWriter, _ *http.Request, operation string, read func() ([]domain.TripDetailsStageMetadata, error)) {
+func (handler *TablesHandler) serveMetadata(response http.ResponseWriter, operation string, read func() ([]domain.TripDetailsStageMetadata, error)) {
 	if handler.service == nil {
 		writeJSONStatus(response, http.StatusServiceUnavailable, 0, "Tables reporting is not configured")
 		return
@@ -91,22 +73,6 @@ func (handler *TablesHandler) writeError(response http.ResponseWriter, operation
 		handler.logger.Printf("Tables %s read failed: %v", operation, err)
 		writeJSONStatus(response, http.StatusInternalServerError, 0, "Unable to load table data")
 	}
-}
-
-type periodicRefreshRouteItem struct {
-	OperatorCode string     `json:"operatorCode"`
-	TravelDate   string     `json:"travelDate"`
-	FromStation  string     `json:"fromStation"`
-	ToStation    string     `json:"toStation"`
-	TicketCount  int        `json:"ticketCount"`
-	IsActive     bool       `json:"isActive"`
-	UpdatedAt    *time.Time `json:"updatedAt"`
-}
-
-func newPeriodicRefreshRouteItem(route domain.PeriodicRefreshRoute) periodicRefreshRouteItem {
-	return periodicRefreshRouteItem{OperatorCode: route.OperatorCode, TravelDate: route.TravelDate,
-		FromStation: route.FromStation, ToStation: route.ToStation, TicketCount: route.TicketCount,
-		IsActive: route.IsActive, UpdatedAt: optionalTablesTime(route.UpdatedAt)}
 }
 
 type metadataTableItem struct {

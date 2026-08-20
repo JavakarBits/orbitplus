@@ -15,11 +15,6 @@ var (
 	ErrInvalidTablesLookup = errors.New("invalid tables lookup")
 )
 
-// TablesPeriodicRefreshRouteReader reads all periodic refresh route partitions.
-type TablesPeriodicRefreshRouteReader interface {
-	ListPeriodicRefreshRoutes(context.Context) ([]domain.PeriodicRefreshRoute, error)
-}
-
 // TablesMetadataReader reads TripDetails metadata lookup partitions.
 type TablesMetadataReader interface {
 	FindStagesByRoute(context.Context, string, string, string, string) ([]domain.TripDetailsStageMetadata, error)
@@ -41,23 +36,14 @@ type ScheduleMetadataLookup struct {
 	TravelDate   string
 }
 
-// TablesService provides read-only Cassandra table data for the protected UI.
+// TablesService provides read-only Cassandra metadata for the protected UI.
 type TablesService struct {
-	periodicRoutes TablesPeriodicRefreshRouteReader
-	metadata       TablesMetadataReader
+	metadata TablesMetadataReader
 }
 
 // NewTablesService constructs the protected Tables UI read service.
-func NewTablesService(periodicRoutes TablesPeriodicRefreshRouteReader, metadata TablesMetadataReader) *TablesService {
-	return &TablesService{periodicRoutes: periodicRoutes, metadata: metadata}
-}
-
-// ListPeriodicRefreshRoutes returns every active and inactive scheduled route.
-func (service *TablesService) ListPeriodicRefreshRoutes(ctx context.Context) ([]domain.PeriodicRefreshRoute, error) {
-	if service == nil || service.periodicRoutes == nil {
-		return nil, ErrTablesNotConfigured
-	}
-	return service.periodicRoutes.ListPeriodicRefreshRoutes(ctx)
+func NewTablesService(metadata TablesMetadataReader) *TablesService {
+	return &TablesService{metadata: metadata}
 }
 
 // FindRouteMetadata returns metadata for a complete operator/travel/from/to key.

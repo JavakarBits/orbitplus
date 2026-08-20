@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"time"
 )
 
 // AppEnvironment identifies the deployment environment the process runs in.
@@ -17,32 +16,24 @@ const (
 
 // RuntimeConfig is the service runtime configuration.
 type RuntimeConfig struct {
-	AppEnvironment          AppEnvironment
-	APIPort                 int
-	UIAccessToken           string
-	Storage                 *StorageConfig
-	Queue                   *QueueConfig
-	PeriodicRefreshInterval time.Duration
+	AppEnvironment AppEnvironment
+	APIPort        int
+	UIAccessToken  string
+	Storage        *StorageConfig
+	Queue          *QueueConfig
 }
 
-// DefaultRuntimeConfig returns the configuration used when no environment
-// variables are set.
+// DefaultRuntimeConfig returns the configuration used when no environment variables are set.
 func DefaultRuntimeConfig() RuntimeConfig {
-	return RuntimeConfig{
-		AppEnvironment: Development,
-		APIPort:        8082,
-	}
+	return RuntimeConfig{AppEnvironment: Development, APIPort: 8082}
 }
 
-// LoadRuntimeConfig reads APP_ENV, MASTER_API_PORT, and optional datastore
-// configuration for persisted TripDetails reads and writes.
+// LoadRuntimeConfig reads APP_ENV, MASTER_API_PORT, and optional datastore configuration.
 func LoadRuntimeConfig() (RuntimeConfig, error) {
 	config := DefaultRuntimeConfig()
-
 	if value := os.Getenv("APP_ENV"); value != "" {
 		config.AppEnvironment = AppEnvironment(value)
 	}
-
 	if value := os.Getenv("MASTER_API_PORT"); value != "" {
 		port, err := strconv.Atoi(value)
 		if err != nil || port < 1 || port > 65535 {
@@ -52,29 +43,16 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 	}
 	config.UIAccessToken = os.Getenv("ORBITPLUS_UI_ACCESS_TOKEN")
 
-	persistence, err := loadStorageConfig()
+	storage, err := loadStorageConfig()
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
-	config.Storage = persistence
+	config.Storage = storage
 	queue, err := loadQueueConfig()
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
 	config.Queue = queue
-	if value := os.Getenv("PERIODIC_REFRESH_INTERVAL"); value != "" {
-		interval, err := time.ParseDuration(value)
-		if err != nil || interval <= 0 {
-			return RuntimeConfig{}, fmt.Errorf("PERIODIC_REFRESH_INTERVAL must be a positive duration")
-		}
-		if config.Storage == nil {
-			return RuntimeConfig{}, fmt.Errorf("PERIODIC_REFRESH_INTERVAL requires Cassandra/storage configuration")
-		}
-		if config.Queue == nil {
-			return RuntimeConfig{}, fmt.Errorf("PERIODIC_REFRESH_INTERVAL requires RabbitMQ configuration")
-		}
-		config.PeriodicRefreshInterval = interval
-	}
 	return config, nil
 }
 
