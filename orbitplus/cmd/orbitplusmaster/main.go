@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"orbitplusmaster/internal/application/master"
+	"orbitplusmaster/internal/infrastructure/bits"
 	"orbitplusmaster/internal/infrastructure/cassandra"
 	"orbitplusmaster/internal/infrastructure/dragonfly"
 	masterhttp "orbitplusmaster/internal/infrastructure/http"
@@ -25,7 +26,7 @@ func main() {
 	}
 	log.Printf("orbitplusmaster configuration loaded: APP_ENV=%s MASTER_API_PORT=%d", config.AppEnvironment, config.APIPort)
 
-	tripDetailsService, readService, cacheService, metadata, metrix, closePersistence, err := newMasterServices(config)
+	tripDetailsService, readService, metadata, metrix, periodicRoutes, closePersistence, err := newMasterServices(config)
 	if err != nil {
 		log.Fatalf("initialize TripDetails persistence: %v", err)
 	}
@@ -58,7 +59,7 @@ func main() {
 	tripHistoryService := master.NewTripHistoryService(tripHistoryReader)
 	tablesService := master.NewTablesService(metadata)
 	uiAccessAuth := masterhttp.NewUIAccessAuth(config.UIAccessToken, config.AppEnvironment == master.Production)
-	router := masterhttp.NewRouter(startedAt, tripDetailsService, orionmaxInventoryChangeService, readService, cacheService, rabbitMQManagementReader, queueJobsService, tripFreshnessService, tripHistoryService, tablesService, uiAccessAuth)
+	router := masterhttp.NewRouter(tripDetailsService, orionmaxInventoryChangeService, readService, queueJobsService, tablesService, uiAccessAuth)
 	server := &http.Server{Addr: config.Address(), Handler: router}
 	log.Printf("orbitplusmaster listening on %s", config.Address())
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -66,10 +67,10 @@ func main() {
 	}
 }
 
-func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService, *master.TripDetailsReadService, *master.CacheReadService, *cassandra.TripDetailsMetadataRepository, *cassandra.QueueMetrixRepository, func(), error) {
+func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService, *master.TripDetailsReadService, *cassandra.TripDetailsMetadataRepository, *cassandra.QueueMetrixRepository, *cassandra.PeriodicRefreshRoutesRepository, func(), error) {
 	if config.Storage == nil {
 		log.Print("TripDetails persistence and queue metrix tracking are disabled: ingestion is log-only and persisted reads are unavailable")
-		return master.NewTripDetailsService(), nil, master.NewCacheReadService(nil), nil, nil, func() {}, nil
+		return master.NewTripDetailsService(), nil, nil, nil, nil, func() {}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), config.Storage.Cassandra.Timeout)
 	defer cancel()
@@ -78,7 +79,7 @@ func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService,
 		Database: config.Storage.Dragonfly.Database, DialTimeout: config.Storage.Dragonfly.DialTimeout,
 	})
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 	cassandraConfig := cassandra.Config{
 		Hosts: config.Storage.Cassandra.Hosts, Port: config.Storage.Cassandra.Port,
@@ -88,10 +89,17 @@ func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService,
 	metadata, err := cassandra.NewTripDetailsMetadataRepository(ctx, cassandraConfig)
 	if err != nil {
 		_ = cache.Close()
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 	metrix, err := cassandra.NewQueueMetrixRepository(ctx, cassandraConfig)
 	if err != nil {
+		metadata.Close()
+		_ = cache.Close()
+		return nil, nil, nil, nil, nil, nil, nil, err
+	}
+	periodicRoutes, err := cassandra.NewPeriodicRefreshRoutesRepository(ctx, cassandraConfig)
+	if err != nil {
+		metrix.Close()
 		metadata.Close()
 		_ = cache.Close()
 		return nil, nil, nil, nil, nil, nil, err
@@ -104,5 +112,5 @@ func newMasterServices(config master.RuntimeConfig) (*master.TripDetailsService,
 		metadata.Close()
 		_ = cache.Close()
 	}
-	return master.NewTripDetailsServiceWithStorageAndMetrix(log.Default(), persistence, metrix), readService, cacheService, metadata, metrix, closePersistence, nil
+	return master.NewTripDetailsServiceWithStorageAndMetrix(log.Default(), persistence, metrix), readService, metadata, metrix, periodicRoutes, closePersistence, nil
 }
