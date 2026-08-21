@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // AppEnvironment identifies the deployment environment the process runs in.
@@ -23,6 +24,13 @@ type RuntimeConfig struct {
 	Queue              *QueueConfig
 	RabbitMQManagement *RabbitMQManagementConfig
 	OrbitRouteRefresh  *OrbitRouteRefreshConfig
+	// Verification is nil when live Bits verification is disabled.
+	Verification *VerificationConfig
+	// VerificationError records why live verification is unavailable. It is
+	// deliberately not returned from LoadRuntimeConfig: a broken verification
+	// group must not stop the service from serving cached reads, unlike every
+	// other configuration group, which is load-bearing.
+	VerificationError error
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment variables are set.
@@ -68,6 +76,12 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	config.OrbitRouteRefresh = orbitRouteRefresh
+	verification, err := loadVerificationConfig(config.AppEnvironment, config.Storage)
+	if err != nil {
+		config.VerificationError = err
+	} else {
+		config.Verification = verification
+	}
 	return config, nil
 }
 
