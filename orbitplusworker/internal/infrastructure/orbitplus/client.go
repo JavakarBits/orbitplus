@@ -79,7 +79,7 @@ func (client *OrbitPlusClient) SendTripDetails(ctx context.Context, request work
 	httpRequest.Header.Set("Accept", "application/json")
 	response, err := client.client.Do(httpRequest)
 	if err != nil {
-		return "", fmt.Errorf("OrbitPlus request: %w", err)
+		return "", worker.NewRetryableError("OrbitPlus TripDetails request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError {
@@ -89,7 +89,10 @@ func (client *OrbitPlusClient) SendTripDetails(ctx context.Context, request work
 		return "", fmt.Errorf("OrbitPlus returned HTTP %d", response.StatusCode)
 	}
 	body, err = io.ReadAll(io.LimitReader(response.Body, client.maxResponse+1))
-	if err != nil || int64(len(body)) > client.maxResponse {
+	if err != nil {
+		return "", worker.NewRetryableError("OrbitPlus TripDetails response could not be read")
+	}
+	if int64(len(body)) > client.maxResponse {
 		return "", fmt.Errorf("OrbitPlus response is invalid")
 	}
 	var result struct {

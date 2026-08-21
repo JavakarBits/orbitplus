@@ -1,4 +1,4 @@
-export const ADMIN_ENDPOINTS = Object.freeze({ dashboard: "/orbitplus/api/admin/dashboard", tripHistory: "/orbitplus/api/admin/trip-history", cache: "/orbitplus/cache", reports: "/orbitplus/reports", rabbitmq: "/orbitplus/rabbitmq", routeMetadata: "/orbitplus/tables/route-metadata" });
+export const ADMIN_ENDPOINTS = Object.freeze({ dashboard: "/orbitplus/api/admin/dashboard", tripHistory: "/orbitplus/api/admin/trip-history", cache: "/orbitplus/cache", cacheKeys: "/orbitplus/api/cache", cacheValue: "/orbitplus/api/cache/value", reports: "/orbitplus/reports", rabbitmq: "/orbitplus/rabbitmq", routeMetadata: "/orbitplus/api/tables/route-metadata" });
 
 async function readAPI(fetcher, endpoint, signal) {
   const response = await fetcher(endpoint, { credentials: "same-origin", signal });
@@ -13,6 +13,18 @@ export class AdminPortalService {
   tripHistory({ operatorCode, tripCode, tripDate, fromStation, toStation, signal } = {}) {
     const query = new URLSearchParams({ operatorCode: operatorCode || "", tripCode: tripCode || "", tripDate: tripDate || "", fromStation: fromStation || "", toStation: toStation || "" });
     return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.tripHistory}?${query}`, signal);
+  }
+  cacheKeys({ cursor = 0, limit = 25, category = "all", signal } = {}) {
+    const query = new URLSearchParams({ cursor: String(cursor), limit: String(limit), category });
+    return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.cacheKeys}?${query}`, signal);
+  }
+  cacheValue({ key, signal } = {}) {
+    const query = new URLSearchParams({ key: key || "" });
+    return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.cacheValue}?${query}`, signal);
+  }
+  routeMetadata({ operator, travel, from, to, signal } = {}) {
+    const query = new URLSearchParams({ operator: operator || "", travel: travel || "", from: from || "", to: to || "" });
+    return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.routeMetadata}?${query}`, signal);
   }
 }
 

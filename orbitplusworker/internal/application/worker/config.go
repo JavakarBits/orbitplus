@@ -37,14 +37,27 @@ func (environment AppEnvironment) AllowsInsecureEndpoints() bool {
 	return environment == Development
 }
 
-// WorkerConfig defines the maximum process-local concurrent operations.
+// WorkerConfig defines process-local concurrency and bounded retry behavior.
 type WorkerConfig struct {
-	WorkerConcurrency int `json:"workerConcurrency"`
+	WorkerConcurrency int             `json:"workerConcurrency"`
+	MaxAttempts       int             `json:"maxAttempts"`
+	RetryDelays       []time.Duration `json:"retryDelays"`
 }
 
 func (config WorkerConfig) Validate() error {
 	if config.WorkerConcurrency <= 0 {
 		return fmt.Errorf("%w: worker concurrency must be positive", ErrInvalidConfig)
+	}
+	if config.MaxAttempts <= 0 {
+		return fmt.Errorf("%w: worker max attempts must be positive", ErrInvalidConfig)
+	}
+	if len(config.RetryDelays) != config.MaxAttempts-1 {
+		return fmt.Errorf("%w: worker retry delays must contain one delay per retry", ErrInvalidConfig)
+	}
+	for _, delay := range config.RetryDelays {
+		if delay <= 0 {
+			return fmt.Errorf("%w: worker retry delays must be positive", ErrInvalidConfig)
+		}
 	}
 	return nil
 }
@@ -154,9 +167,13 @@ func DefaultRuntimeConfig() RuntimeConfig {
 	return RuntimeConfig{
 		AppEnvironment: Production,
 		RabbitMQ:       RabbitMQConfig{Prefetch: 10},
-		Worker:         WorkerConfig{WorkerConcurrency: 10},
-		HealthAPI:      HealthAPIConfig{Host: "0.0.0.0", Port: 8080},
-		HTTPTimeout:    15 * time.Second, OrbitPlusResponseSize: 64 << 10,
+		Worker: WorkerConfig{
+			WorkerConcurrency: 10,
+			MaxAttempts:       3,
+			RetryDelays:       []time.Duration{2 * time.Second, 5 * time.Second},
+		},
+		HealthAPI:   HealthAPIConfig{Host: "0.0.0.0", Port: 8080},
+		HTTPTimeout: 15 * time.Second, OrbitPlusResponseSize: 64 << 10,
 	}
 }
 
@@ -218,6 +235,12 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 	if err := setPositiveInt(lookup, "WORKER_CONCURRENCY", &config.Worker.WorkerConcurrency); err != nil {
 		return err
 	}
+	if err := setPositiveInt(lookup, "WORKER_MAX_ATTEMPTS", &config.Worker.MaxAttempts); err != nil {
+		return err
+	}
+	if err := setRetryDelays(lookup, "WORKER_RETRY_DELAYS", &config.Worker.RetryDelays); err != nil {
+		return err
+	}
 	if err := setPositiveInt(lookup, "RABBITMQ_PREFETCH", &config.RabbitMQ.Prefetch); err != nil {
 		return err
 	}
@@ -271,6 +294,25 @@ func setPositiveDuration(lookup func(string) (string, bool), name string, target
 		}
 		*target = parsed
 	}
+	return nil
+}
+
+func setRetryDelays(lookup func(string) (string, bool), name string, target *[]time.Duration) error {
+	value, ok := lookup(name)
+	if !ok || strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	values := strings.Split(value, ",")
+	delays := make([]time.Duration, 0, len(values))
+	for _, value := range values {
+		delay, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil || delay <= 0 {
+			return fmt.Errorf("%s must be comma-separated positive durations", name)
+		}
+		delays = append(delays, delay)
+	}
+	*target = delays
 	return nil
 }
 

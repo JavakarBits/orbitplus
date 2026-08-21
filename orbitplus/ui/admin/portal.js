@@ -7,20 +7,15 @@ const routes = [
   { id: "workers", label: "Workers", icon: "⚙" },
   { id: "tripdetails", label: "TripDetails", icon: "✦" },
   { id: "trip-analyzer", label: "Trip Analyzer", icon: "⌕" },
-  { id: "scheduler", label: "Scheduler", icon: "◷" },
   { id: "inventory-events", label: "Inventory Events", icon: "⇄" },
   { id: "failures", label: "Failures & DLQ", icon: "⚠" },
   { id: "dragonfly", label: "Dragonfly (Cache)", icon: "◆" },
   { id: "cassandra", label: "Cassandra (Metadata)", icon: "▤" },
-  { id: "api-monitoring", label: "API Monitoring", icon: "◎" },
-  { id: "alerts", label: "Alerts", icon: "⌁" },
-  { id: "reports", label: "Reports", icon: "▥" },
-  { id: "settings", label: "Settings", icon: "⚒" }
+  { id: "reports", label: "Reports", icon: "▥" }
 ];
 const SERIES = ["#6c5ce7", "#3f7ff0", "#16a06a", "#dd9016", "#d94b5c", "#1899b0", "#a05bd0", "#7b879e"];
 
 let controller;
-let refreshTimer;
 let overview;
 const trip = { operatorCode: "", tripCode: "", tripDate: "", fromStation: "", toStation: "", state: "idle", message: "", result: null };
 const TRIP_FIELDS = [["trip-operator", "operatorCode"], ["trip-code", "tripCode"], ["trip-date", "tripDate"], ["trip-from", "fromStation"], ["trip-to", "toStation"]];
@@ -48,7 +43,7 @@ function top(current) {
   const page = routes.find((item) => item.id === current);
   const subtitle = current === "dashboard" ? "Live overview of the TripDetails refresh system" : "Live data where a backend source exists";
   const failures = live("queueMetrics") ? (data("queueMetrics").recentFailures || []).length : 0;
-  return `<header class="top"><div class="top-l"><button class="burger" id="burger" type="button" title="Navigation">☰</button><div><h1>${esc(page?.label || "Dashboard")}</h1><p>${esc(subtitle)}</p></div></div><div class="top-r"><label class="pill" id="auto-pill"><input id="auto-refresh" type="checkbox" checked> Auto refresh <b>On</b></label><span class="pill">◷ Last 24 hours</span><button class="bell" id="bell" type="button" title="Failed records in sample">⌁${failures ? `<span>${failures}</span>` : ""}</button><span class="user"><i>A</i>admin</span></div></header>`;
+  return `<header class="top"><div class="top-l"><button class="burger" id="burger" type="button" title="Navigation">☰</button><div><h1>${esc(page?.label || "Dashboard")}</h1><p>${esc(subtitle)}</p></div></div><div class="top-r"><span class="pill">◷ Last 24 hours</span><button class="bell" id="bell" type="button" title="Failed records in sample">⌁${failures ? `<span>${failures}</span>` : ""}</button><span class="user"><i>A</i>admin</span></div></header>`;
 }
 
 function kpis() {
@@ -67,7 +62,6 @@ function kpis() {
   } else {
     cards.push(["⇄", "Queue Updates (24h)", "Unavailable", capability("queueMetrics").detail, "t-slate na"]);
   }
-  cards.push(["◷", "Periodic Refreshes", "Unavailable", capability("scheduler").detail, "t-slate na"]);
   if (live("rabbitmq")) {
     cards.push(["≋", "Pending Broker Messages", num((rabbit.queues || []).reduce((sum, item) => sum + Number(item.messages || 0), 0)), "Live RabbitMQ, configured vhost", "t-amber"]);
     cards.push(["⚙", "Active Workers", num((rabbit.consumers || []).length), "Live RabbitMQ consumers", "t-violet"]);
@@ -197,7 +191,6 @@ function dashboard() {
   </section>
   <section class="grid g-a">
     <article class="panel"><div class="p-head"><h2>Action Distribution</h2><span class="tag${live("queueMetrics") ? "" : " na"}">24h sample</span></div>${actionRows()}</article>
-    <article class="panel"><div class="p-head"><h2>Scheduler (Periodic Refresh)</h2><span class="tag na">unavailable</span></div>${na("scheduler")}</article>
     <article class="panel"><div class="p-head"><h2>Inventory Events (24h)</h2><span class="tag${live("queueMetrics") ? "" : " na"}">Queue Metrics</span></div>${live("queueMetrics") ? `${eventCounts()}${areaGraph(queue.hourlyVolumes || [], queue.hourlyActionVolumes || [])}` : na("queueMetrics")}</article>
   </section>
   <section class="grid g-2">
@@ -206,10 +199,6 @@ function dashboard() {
   </section>
   <section class="grid">
     <article class="panel"><div class="p-head"><h2>Trip Analyzer / Trip History</h2><a href="/orbitplus/admin/trip-analyzer">Open full view</a></div>${tripAnalyzer()}</article>
-  </section>
-  <section class="grid g-2">
-    <article class="panel"><div class="p-head"><h2>Dragonfly (Cache)</h2><span class="tag na">metrics unavailable</span></div>${na("dragonflyMetrics", ADMIN_ENDPOINTS.cache, "Open Cache Viewer")}</article>
-    <article class="panel"><div class="p-head"><h2>Cassandra (Metadata)</h2><span class="tag na">metrics unavailable</span></div>${na("cassandraMetrics", ADMIN_ENDPOINTS.routeMetadata, "Open Route Metadata")}</article>
   </section>`;
 }
 
@@ -226,6 +215,164 @@ function recordsPage() {
   return `<section class="panel"><div class="p-head"><h2>Queue Lifecycle Records</h2><span class="tag">24h sample</span></div><div class="t-wrap"><table><thead><tr><th>Ref ID</th><th>Operator</th><th>Action</th><th>Activity</th><th>Trip date</th><th>Status</th><th>Updated</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No records in the loaded sample.</td></tr>'}</tbody></table></div><p class="note">This is Orionmax queue lifecycle state, not a dedicated inventory-event telemetry stream.</p></section>`;
 }
 
+const cacheViewer = { category: "all", cursor: 0, items: [], state: "idle", message: "", valueState: "idle", valueKey: "", valueContent: "", valueFound: true };
+let cacheKeysController;
+let cacheValueController;
+
+function cacheViewerPage() {
+  const tabs = [["all", "All"], ["trip", "Trip cache"], ["stage", "Stage cache"], ["busmap", "BusMap cache"], ["other", "Other"]];
+  const status = cacheViewer.state === "error" ? "Cache keys are unavailable." : cacheViewer.state === "loading" ? "Loading cache keys…" : `Showing ${num(cacheViewer.items.length)} ${esc(cacheViewer.category)} cache keys. Click Show to load data.`;
+  const rows = cacheViewer.items.map((item) => `<tr><td class="df-key">${esc(item.key)}</td><td>${esc(item.category)}</td><td><button class="df-show" type="button" data-cache-key="${esc(item.key)}">Show</button></td></tr>`).join("");
+  const empty = cacheViewer.state === "loading" && !cacheViewer.items.length ? "Loading cache keys…" : cacheViewer.state === "error" ? cacheViewer.message || "Unable to load cache keys. Check the Dragonfly connection and try again." : "No cache keys found in this group.";
+  const value = cacheViewer.valueState === "idle" ? "" : `<section class="df-value"><div class="df-value-head"><strong>${cacheViewer.valueState === "loading" ? "Loading cache data…" : cacheViewer.valueState === "error" ? "Unable to load cache data" : cacheViewer.valueFound ? "Cache data" : "Cache key no longer exists"}</strong><span>${esc(cacheViewer.valueKey)}</span></div>${cacheViewer.valueState === "done" && cacheViewer.valueFound ? `<pre>${esc(formatCacheValue(cacheViewer.valueContent))}</pre>` : ""}${cacheViewer.valueState === "error" ? `<p>${esc(cacheViewer.message)}</p>` : ""}</section>`;
+  return `<section class="panel df-viewer" id="dragonfly-cache-viewer"><div class="p-head"><div><h2>Dragonfly cache viewer</h2><p class="df-subtitle">Browse cache keys by type. Stored data loads only after you click Show.</p></div><button class="df-refresh" id="cache-refresh" type="button">Refresh viewer</button></div><div class="df-tabs" role="tablist" aria-label="Cache groups">${tabs.map(([id, label]) => `<button type="button" role="tab" data-cache-category="${id}" aria-selected="${cacheViewer.category === id}">${label}</button>`).join("")}</div><p class="df-status">${status}</p>${rows ? `<div class="t-wrap"><table><thead><tr><th>Cache key</th><th>Category</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="df-empty">${esc(empty)}</div>`}<div class="df-actions"><button class="df-load-more" id="cache-load-more" type="button"${cacheViewer.cursor === 0 ? " hidden" : ""}${cacheViewer.state === "loading" ? " disabled" : ""}>Load more keys</button></div>${value}</section>`;
+}
+
+function formatCacheValue(content) {
+  try { return JSON.stringify(JSON.parse(content), null, 2); } catch { return content; }
+}
+
+function bindCacheViewer() {
+  document.querySelectorAll("[data-cache-category]").forEach((button) => button.addEventListener("click", () => {
+    if (cacheViewer.category === button.dataset.cacheCategory && cacheViewer.state !== "error") return;
+    cacheViewer.category = button.dataset.cacheCategory;
+    loadCacheViewer(true);
+  }));
+  document.getElementById("cache-refresh")?.addEventListener("click", () => loadCacheViewer(true));
+  document.getElementById("cache-load-more")?.addEventListener("click", () => loadCacheViewer());
+  document.querySelectorAll("[data-cache-key]").forEach((button) => button.addEventListener("click", () => showCacheValue(button.dataset.cacheKey)));
+}
+
+function paintCacheViewer() {
+  const target = document.getElementById("dragonfly-cache-viewer");
+  if (target) {
+    target.outerHTML = cacheViewerPage();
+    bindCacheViewer();
+  }
+}
+
+async function loadCacheViewer(reset = false) {
+  if (!reset && (!cacheViewer.cursor || cacheViewer.state === "loading")) return;
+  cacheKeysController?.abort();
+  const activeController = new AbortController();
+  cacheKeysController = activeController;
+  if (reset) {
+    cacheViewer.cursor = 0;
+    cacheViewer.items = [];
+    cacheViewer.valueState = "idle";
+    cacheViewer.valueKey = "";
+    cacheViewer.valueContent = "";
+  }
+  cacheViewer.state = "loading";
+  cacheViewer.message = "";
+  paintCacheViewer();
+  try {
+    const result = await adminPortalService.cacheKeys({ cursor: cacheViewer.cursor, limit: 25, category: cacheViewer.category, signal: activeController.signal });
+    if (cacheKeysController !== activeController) return;
+    const seen = new Set(cacheViewer.items.map((item) => item.key));
+    for (const item of result.items || []) {
+      if (item?.key && !seen.has(item.key)) {
+        seen.add(item.key);
+        cacheViewer.items.push({ key: item.key, category: item.category || "other" });
+      }
+    }
+    cacheViewer.cursor = Number(result.nextCursor) || 0;
+    cacheViewer.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || cacheKeysController !== activeController) return;
+    cacheViewer.state = "error";
+    cacheViewer.message = error.message || "Unable to load cache keys.";
+  } finally {
+    if (cacheKeysController === activeController) {
+      cacheKeysController = undefined;
+      paintCacheViewer();
+    }
+  }
+}
+
+async function showCacheValue(key) {
+  cacheValueController?.abort();
+  const activeController = new AbortController();
+  cacheValueController = activeController;
+  cacheViewer.valueKey = key;
+  cacheViewer.valueState = "loading";
+  cacheViewer.message = "";
+  paintCacheViewer();
+  try {
+    const result = await adminPortalService.cacheValue({ key, signal: activeController.signal });
+    if (cacheValueController !== activeController) return;
+    cacheViewer.valueFound = Boolean(result.found);
+    cacheViewer.valueContent = result.content || "";
+    cacheViewer.valueState = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || cacheValueController !== activeController) return;
+    cacheViewer.valueState = "error";
+    cacheViewer.message = error.message || "Unable to load cache data.";
+  } finally {
+    if (cacheValueController === activeController) {
+      cacheValueController = undefined;
+      paintCacheViewer();
+    }
+  }
+}
+
+const routeMetadata = { operator: "", travel: "", from: "", to: "", state: "idle", message: "", items: [] };
+const ROUTE_METADATA_FIELDS = [["metadata-operator", "operator"], ["metadata-travel", "travel"], ["metadata-from", "from"], ["metadata-to", "to"]];
+let routeMetadataController;
+
+function routeMetadataResult() {
+  if (routeMetadata.state === "idle") return `<div class="cm-empty">Enter the complete route key to look up persisted metadata.</div>`;
+  if (routeMetadata.state === "loading") return `<div class="cm-empty">Loading route metadata…</div>`;
+  if (routeMetadata.state === "error") return `<div class="cm-empty cm-error">${esc(routeMetadata.message)}</div>`;
+  if (!routeMetadata.items.length) return `<div class="cm-empty">No route metadata found for this complete route key.</div>`;
+  const rows = routeMetadata.items.map((item) => `<tr><td>${esc(item.operatorCode)}</td><td>${esc(item.tripDate)}</td><td>${esc(item.fromStation)}</td><td>${esc(item.toStation)}</td><td>${esc(item.tripCode)}</td><td>${esc(item.tripStageCode)}</td><td>${esc(item.updatedAt ? stamp(item.updatedAt) : "—")}</td></tr>`).join("");
+  return `<div class="t-wrap"><table><thead><tr><th>Operator</th><th>Trip date</th><th>From</th><th>To</th><th>Trip code</th><th>Trip stage code</th><th>Updated at</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function routeMetadataPage() {
+  return `<section class="panel cm-viewer"><div class="p-head"><div><h2>Route Metadata</h2><p class="cm-subtitle">Read-only Cassandra lookup for one complete route partition.</p></div><span class="tag na">on-demand lookup</span></div><form class="cm-form" id="route-metadata-form" autocomplete="off"><label>Operator<input id="metadata-operator" name="operator" value="${esc(routeMetadata.operator)}" maxlength="128" required></label><label>Trip date<input id="metadata-travel" name="travel" type="date" value="${esc(routeMetadata.travel)}" required></label><label>From<input id="metadata-from" name="from" value="${esc(routeMetadata.from)}" maxlength="128" required></label><label>To<input id="metadata-to" name="to" value="${esc(routeMetadata.to)}" maxlength="128" required></label><button type="submit">Look up metadata</button></form><div id="route-metadata-result">${routeMetadataResult()}</div></section>`;
+}
+
+function bindRouteMetadata() {
+  document.getElementById("route-metadata-form")?.addEventListener("submit", (event) => { event.preventDefault(); runRouteMetadataLookup(); });
+  ROUTE_METADATA_FIELDS.forEach(([id, key]) => document.getElementById(id)?.addEventListener("input", (event) => { routeMetadata[key] = event.target.value; }));
+}
+
+function paintRouteMetadataResult() {
+  const target = document.getElementById("route-metadata-result");
+  if (target) target.innerHTML = routeMetadataResult();
+}
+
+async function runRouteMetadataLookup() {
+  ROUTE_METADATA_FIELDS.forEach(([id, key]) => { routeMetadata[key] = document.getElementById(id)?.value.trim() || ""; });
+  if (Object.values(routeMetadata).slice(0, 4).some((value) => !value || value.includes(":"))) {
+    routeMetadata.state = "error";
+    routeMetadata.message = "Operator, trip date, from, and to are required and cannot contain a colon.";
+    paintRouteMetadataResult();
+    return;
+  }
+  routeMetadataController?.abort();
+  const activeController = new AbortController();
+  routeMetadataController = activeController;
+  routeMetadata.state = "loading";
+  routeMetadata.message = "";
+  paintRouteMetadataResult();
+  try {
+    routeMetadata.items = await adminPortalService.routeMetadata({ operator: routeMetadata.operator, travel: routeMetadata.travel, from: routeMetadata.from, to: routeMetadata.to, signal: activeController.signal });
+    if (routeMetadataController !== activeController) return;
+    routeMetadata.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || routeMetadataController !== activeController) return;
+    routeMetadata.state = "error";
+    routeMetadata.message = error.message || "Unable to load route metadata.";
+  } finally {
+    if (routeMetadataController === activeController) {
+      routeMetadataController = undefined;
+      paintRouteMetadataResult();
+    }
+  }
+}
+
 function page(current) {
   if (current === "dashboard") return dashboard();
   if (current === "queues") return queuesPage();
@@ -234,13 +381,10 @@ function page(current) {
   if (current === "inventory-events") return recordsPage();
   if (current === "tripdetails") return `<section class="panel"><div class="p-head"><h2>TripDetails Freshness</h2></div>${freshness()}</section>`;
   if (current === "trip-analyzer") return `<section class="panel"><div class="p-head"><h2>Trip Analyzer / Trip History</h2><span class="tag na">bounded scan · queue_metrix</span></div>${tripAnalyzer()}</section>`;
-  if (current === "scheduler") return `<section class="panel"><div class="p-head"><h2>Scheduler (Periodic Refresh)</h2></div>${na("scheduler")}</section>`;
-  if (current === "dragonfly") return `<section class="panel"><div class="p-head"><h2>Dragonfly (Cache)</h2></div>${na("dragonflyMetrics", ADMIN_ENDPOINTS.cache, "Open Cache Viewer")}</section>`;
-  if (current === "cassandra") return `<section class="panel"><div class="p-head"><h2>Cassandra (Metadata)</h2></div>${na("cassandraMetrics", ADMIN_ENDPOINTS.routeMetadata, "Open Route Metadata")}</section>`;
-  if (current === "api-monitoring") return `<section class="panel"><div class="p-head"><h2>API Monitoring</h2></div>${na("apiMonitoring")}</section>`;
-  if (current === "alerts") return `<section class="panel"><div class="p-head"><h2>Alerts</h2></div>${na("alerts")}</section>`;
+  if (current === "dragonfly") return cacheViewerPage();
+  if (current === "cassandra") return routeMetadataPage();
   if (current === "reports") return `<section class="panel"><div class="p-head"><h2>Reports</h2><a href="${ADMIN_ENDPOINTS.reports}">Open Reports</a></div><div class="na-box"><div>Detailed Queue Metrics reporting and filtering remain available in the existing reports area.</div></div></section>`;
-  return `<section class="panel"><div class="p-head"><h2>Settings</h2></div><div class="na-box"><div>Access uses the existing protected UI session. Role management and configurable thresholds require an authorized settings API, so no values are shown here.</div></div></section>`;
+  return dashboard();
 }
 
 function bind() {
@@ -248,17 +392,8 @@ function bind() {
   TRIP_FIELDS.forEach(([id, key]) => document.getElementById(id)?.addEventListener("input", (event) => { trip[key] = event.target.value; }));
   document.getElementById("bell")?.addEventListener("click", () => { location.href = href("failures"); });
   document.getElementById("burger")?.addEventListener("click", () => document.querySelector(".side")?.scrollIntoView({ behavior: "smooth" }));
-  const auto = document.getElementById("auto-refresh");
-  auto?.addEventListener("change", () => { document.getElementById("auto-pill")?.classList.toggle("off", !auto.checked); schedule(); });
-}
-
-function schedule() {
-  clearInterval(refreshTimer);
-  if (!document.getElementById("auto-refresh")?.checked) return;
-  refreshTimer = setInterval(() => {
-    if (document.activeElement?.closest(".trip-form") || trip.state === "loading") return;
-    load();
-  }, 30000);
+  if (route() === "dragonfly") bindCacheViewer();
+  if (route() === "cassandra") bindRouteMetadata();
 }
 
 async function load() {
@@ -270,7 +405,7 @@ async function load() {
     overview = await adminPortalService.dashboard({ signal: controller.signal });
     mount.innerHTML = shell(current, page(current));
     bind();
-    schedule();
+    if (current === "dragonfly") loadCacheViewer(true);
   } catch (error) {
     if (error.name === "AbortError") return;
     mount.innerHTML = shell(current, '<div class="err">Unable to load the protected admin snapshot. Check the session and refresh to retry.</div>');

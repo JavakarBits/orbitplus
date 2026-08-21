@@ -60,17 +60,23 @@ func (client *OrbitClient) FetchOperatorCredential(ctx context.Context, request 
 
 	response, err := client.client.Do(httpRequest)
 	if err != nil {
-		// The error is not wrapped because transport errors can contain the
-		// credential-bearing request URL.
-		return worker.OperatorCredential{}, fmt.Errorf("Orbit credential request failed")
+		// The underlying error is deliberately discarded because it can contain
+		// the credential-bearing request URL.
+		return worker.OperatorCredential{}, worker.NewRetryableError("Orbit credential request failed")
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError {
+		return worker.OperatorCredential{}, worker.NewRetryableError(fmt.Sprintf("Orbit credential request returned HTTP %d", response.StatusCode))
+	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return worker.OperatorCredential{}, fmt.Errorf("Orbit credential request returned HTTP %d", response.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, client.maxResponse+1))
-	if err != nil || int64(len(body)) > client.maxResponse {
+	if err != nil {
+		return worker.OperatorCredential{}, worker.NewRetryableError("Orbit credential response could not be read")
+	}
+	if int64(len(body)) > client.maxResponse {
 		return worker.OperatorCredential{}, fmt.Errorf("Orbit credential response is invalid")
 	}
 	var result struct {

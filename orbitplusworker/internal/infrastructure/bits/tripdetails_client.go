@@ -58,15 +58,18 @@ func (client *BitsTripDetailsClient) FetchTripDetails(ctx context.Context, reque
 
 	response, err := client.client.Do(httpRequest)
 	if err != nil {
-		return worker.BitsTripDetailsResponse{}, fmt.Errorf("Bits request: %w", err)
+		return worker.BitsTripDetailsResponse{}, worker.NewRetryableError("Bits request failed")
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError {
+		return worker.BitsTripDetailsResponse{}, worker.NewRetryableError(fmt.Sprintf("Bits returned HTTP %d", response.StatusCode))
+	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return worker.BitsTripDetailsResponse{}, fmt.Errorf("Bits returned HTTP %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return worker.BitsTripDetailsResponse{}, fmt.Errorf("read Bits response: %w", err)
+		return worker.BitsTripDetailsResponse{}, worker.NewRetryableError("Bits response could not be read")
 	}
 	return worker.BitsTripDetailsResponse{Body: append([]byte(nil), body...)}, nil
 }

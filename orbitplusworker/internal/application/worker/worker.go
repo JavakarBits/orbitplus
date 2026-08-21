@@ -39,9 +39,9 @@ func NewTripDetailsRefreshWorker(config WorkerConfig, consumer RabbitMQConsumer,
 	}, nil
 }
 
-// Handle processes one delivery. A valid message is processed once. Any terminal
-// processing failure is reported to the OrbitPlus DLQ API; the RabbitMQ
-// delivery is acknowledged only after the DLQ report is accepted.
+// Handle processes one delivery with bounded retries for transient dependency
+// failures. Terminal failures and exhausted retries are reported once to the
+// OrbitPlus DLQ API before the RabbitMQ delivery is acknowledged.
 func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery RabbitMQDelivery) (result ExecutionResult) {
 	startedAt := time.Now()
 	var message domain.TripDetailsRefreshMessage
@@ -67,29 +67,74 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	message = parsedMessage
 	slog.Info("TripDetails refresh started", "actionType", message.ActionType, "operator", message.OperatorCode)
 
+	for attempt := 1; attempt <= worker.config.MaxAttempts; attempt++ {
+		slog.Info("TripDetails refresh processing attempt started",
+			"actionType", message.ActionType,
+			"operator", message.OperatorCode,
+			"attempt", attempt,
+			"maxAttempts", worker.config.MaxAttempts,
+		)
+		failureStatus, failureDetail, orbitPlusStatus, retryable := worker.processOnce(ctx, message)
+		if failureStatus == "" {
+			slog.Info("RabbitMQ acknowledgement started", "actionType", message.ActionType, "operator", message.OperatorCode, "status", orbitPlusStatus)
+			if err := delivery.Ack(ctx); err != nil {
+				slog.Info("RabbitMQ acknowledgement completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
+				return worker.operationError(ExecutionAckError, err, orbitPlusStatus)
+			}
+			slog.Info("RabbitMQ acknowledgement completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", true)
+			return ExecutionResult{Status: ExecutionAcknowledged, OrbitPlusStatus: orbitPlusStatus, Acknowledged: true}
+		}
+		if err := ctx.Err(); err != nil {
+			return ExecutionResult{Status: ExecutionCancelled, OrbitPlusStatus: orbitPlusStatus, Err: err}
+		}
+		if !retryable || attempt == worker.config.MaxAttempts {
+			return worker.reportFailure(ctx, delivery, message, failureStatus, failureDetail, orbitPlusStatus)
+		}
+
+		delay := worker.config.RetryDelays[attempt-1]
+		slog.Info("TripDetails refresh processing attempt will retry",
+			"actionType", message.ActionType,
+			"operator", message.OperatorCode,
+			"attempt", attempt,
+			"nextAttempt", attempt+1,
+			"delay", delay.String(),
+		)
+		if err := waitForRetry(ctx, delay); err != nil {
+			return ExecutionResult{Status: ExecutionCancelled, OrbitPlusStatus: orbitPlusStatus, Err: err}
+		}
+	}
+
+	return ExecutionResult{Status: ExecutionCancelled, Err: context.Canceled}
+}
+
+func (worker *TripDetailsRefreshWorker) processOnce(ctx context.Context, message domain.TripDetailsRefreshMessage) (ExecutionStatus, string, OrbitPlusStatus, bool) {
 	credential, err := worker.resolveCredential(ctx, message)
 	if err != nil {
-		return worker.reportFailure(ctx, delivery, message, ExecutionCredentialError, "Orbit operator credential could not be resolved.")
+		return ExecutionCredentialError, "Orbit operator credential could not be resolved.", "", IsRetryableError(err)
 	}
 	sourceResult, err := worker.fetchTripDetails(ctx, message, credential)
 	if err != nil {
-		return worker.reportFailure(ctx, delivery, message, ExecutionSourceError, "Bits request failed or returned an empty response.")
+		return ExecutionSourceError, "Bits request failed or returned an empty response.", "", IsRetryableError(err)
 	}
 	orbitPlusStatus, err := worker.pushTripDetails(ctx, message, sourceResult)
 	if err != nil {
-		return worker.reportFailure(ctx, delivery, message, ExecutionOrbitPlusError, "OrbitPlus TripDetails request failed.")
+		return ExecutionOrbitPlusError, "OrbitPlus TripDetails request failed.", "", IsRetryableError(err)
 	}
 	if !orbitPlusStatus.AcknowledgementEligible() {
-		return worker.reportFailure(ctx, delivery, message, ExecutionOrbitPlusOutcome, "OrbitPlus TripDetails returned a retryable response.", orbitPlusStatus)
+		return ExecutionOrbitPlusOutcome, "OrbitPlus TripDetails returned a retryable response.", orbitPlusStatus, orbitPlusStatus == OrbitPlusRetryable
 	}
+	return "", "", orbitPlusStatus, false
+}
 
-	slog.Info("RabbitMQ acknowledgement started", "actionType", message.ActionType, "operator", message.OperatorCode, "status", orbitPlusStatus)
-	if err := delivery.Ack(ctx); err != nil {
-		slog.Info("RabbitMQ acknowledgement completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
-		return worker.operationError(ExecutionAckError, err, orbitPlusStatus)
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	slog.Info("RabbitMQ acknowledgement completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", true)
-	return ExecutionResult{Status: ExecutionAcknowledged, OrbitPlusStatus: orbitPlusStatus, Acknowledged: true}
 }
 
 func (worker *TripDetailsRefreshWorker) reportFailure(ctx context.Context, delivery RabbitMQDelivery, message domain.TripDetailsRefreshMessage, failureStatus ExecutionStatus, failureDetail string, orbitPlusStatus ...OrbitPlusStatus) ExecutionResult {
