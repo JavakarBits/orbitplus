@@ -13,12 +13,12 @@ type TripDetailsMetadataRepository interface {
 	SaveScheduleMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error
 }
 
-func (persistence *TripDetailsStorage) storeSearchMetadata(ctx context.Context, operatorCode, tripCode, tripStageCode, travelDate, fromStationCode, toStationCode string, entry map[string]any, index int) error {
+func (persistence *TripDetailsStorage) storeSearchMetadata(ctx context.Context, operatorCode, tripCode, tripStageCode, tripDate, fromStationCode, toStationCode string, entry map[string]any, index int) error {
 	metadata := domain.TripDetailsStageMetadata{
 		OperatorCode:    operatorCode,
 		TripCode:        tripCode,
 		ScheduleCode:    scheduleCodeFromEntry(entry),
-		TravelDate:      travelDate,
+		TripDate:        tripDate,
 		FromStationCode: fromStationCode,
 		ToStationCode:   toStationCode,
 		TripStageCode:   tripStageCode,

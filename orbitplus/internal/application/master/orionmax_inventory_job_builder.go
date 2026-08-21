@@ -28,7 +28,7 @@ var actionTypeByActivityType = map[string]string{
 
 // InventoryScheduleReader resolves Bits trip codes from stored schedule metadata.
 type InventoryScheduleReader interface {
-	FindStagesBySchedule(ctx context.Context, operatorCode, scheduleCode, travelDate string) ([]domain.TripDetailsStageMetadata, error)
+	FindStagesBySchedule(ctx context.Context, operatorCode, scheduleCode, tripDate string) ([]domain.TripDetailsStageMetadata, error)
 }
 
 type orionmaxInventoryEvent struct {
@@ -73,12 +73,12 @@ func newQueueMetrix(activityType, actionType, zone string, item orionmaxInventor
 	return domain.QueueMetrix{
 		ReferenceID: item.ReferenceID, ActivityType: activityType, ActionType: actionType,
 		OperatorCode: item.OperatorCode, ScheduleCode: item.ScheduleCode, SourceStationCode: item.Source,
-		DestinationStationCode: item.Destination, TravelDate: metricTravelDate(item.DOJ), Zone: zone,
+		DestinationStationCode: item.Destination, TripDate: metricTripDate(item.DOJ), Zone: zone,
 		QueueStatus: domain.QueueStatusReceived, UpdatedAt: now,
 	}
 }
 
-func metricTravelDate(value string) string {
+func metricTripDate(value string) string {
 	date := strings.TrimSpace(value)
 	if len(date) >= len("2006-01-02") {
 		return date[:len("2006-01-02")]
@@ -90,17 +90,17 @@ func buildInventoryRefreshJob(ctx context.Context, actionType string, item orion
 	if item.ReferenceID == "" || item.OperatorCode == "" || item.Source == "" || item.Destination == "" {
 		return inventoryRefreshJob{}, ErrInvalidInventoryEvent
 	}
-	travelDate, err := normalizeTravelDate(item.DOJ)
+	tripDate, err := normalizeTripDate(item.DOJ)
 	if err != nil {
 		return inventoryRefreshJob{}, err
 	}
-	metric.TravelDate = travelDate
+	metric.TripDate = tripDate
 	job := map[string]string{"referenceId": item.ReferenceID, "operatorCode": item.OperatorCode, "actionType": actionType}
 	if actionType == "busmap" {
 		if schedules == nil || item.ScheduleCode == "" || item.ScheduleCode == "NA" {
 			return inventoryRefreshJob{}, ErrTripCodeUnavailable
 		}
-		candidates, err := schedules.FindStagesBySchedule(ctx, item.OperatorCode, item.ScheduleCode, travelDate)
+		candidates, err := schedules.FindStagesBySchedule(ctx, item.OperatorCode, item.ScheduleCode, tripDate)
 		if err != nil {
 			return inventoryRefreshJob{}, fmt.Errorf("find schedule metadata: %w", err)
 		}
@@ -112,11 +112,11 @@ func buildInventoryRefreshJob(ctx context.Context, actionType string, item orion
 		job["tripCode"] = tripCode
 		job["fromStationCode"] = item.Source
 		job["toStationCode"] = item.Destination
-		job["travelDate"] = travelDate
+		job["travelDate"] = tripDate
 	} else {
 		job["fromCode"] = item.Source
 		job["toCode"] = item.Destination
-		job["tripDate"] = travelDate
+		job["tripDate"] = tripDate
 	}
 	payload, err := json.Marshal(job)
 	if err != nil {
@@ -125,8 +125,8 @@ func buildInventoryRefreshJob(ctx context.Context, actionType string, item orion
 	return inventoryRefreshJob{Metric: metric, Payload: payload}, nil
 }
 
-func normalizeTravelDate(value string) (string, error) {
-	date := metricTravelDate(value)
+func normalizeTripDate(value string) (string, error) {
+	date := metricTripDate(value)
 	if _, err := time.Parse("2006-01-02", date); err != nil {
 		return "", ErrInvalidInventoryEvent
 	}

@@ -16,11 +16,12 @@ const (
 
 // RuntimeConfig is the service runtime configuration.
 type RuntimeConfig struct {
-	AppEnvironment AppEnvironment
-	APIPort        int
-	UIAccessToken  string
-	Storage        *StorageConfig
-	Queue          *QueueConfig
+	AppEnvironment     AppEnvironment
+	APIPort            int
+	UIAccessToken      string
+	Storage            *StorageConfig
+	Queue              *QueueConfig
+	RabbitMQManagement *RabbitMQManagementConfig
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment variables are set.
@@ -53,6 +54,11 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	config.Queue = queue
+	rabbitMQManagement, err := loadRabbitMQManagementConfig()
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	config.RabbitMQManagement = rabbitMQManagement
 	return config, nil
 }
 

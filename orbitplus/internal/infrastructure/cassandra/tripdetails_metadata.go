@@ -55,7 +55,7 @@ func (repository *TripDetailsMetadataRepository) SaveRouteMetadata(ctx context.C
 	routeQuery := `INSERT INTO ` + metadataRouteTable + `
 		(operator_code, travel_date, from_station_code, to_station_code, trip_code, trip_stage_code, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`
-	if err := repository.session.Query(routeQuery, metadata.OperatorCode, metadata.TravelDate, metadata.FromStationCode,
+	if err := repository.session.Query(routeQuery, metadata.OperatorCode, metadata.TripDate, metadata.FromStationCode,
 		metadata.ToStationCode, metadata.TripCode, metadata.TripStageCode, metadata.UpdatedAt).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("save Cassandra route metadata: %w", err)
 	}
@@ -69,10 +69,10 @@ func (repository *TripDetailsMetadataRepository) ListStaleRouteMetadata(ctx cont
 	latest := make(map[routeMetadataKey]domain.TripDetailsStageMetadata)
 	for {
 		var metadata domain.TripDetailsStageMetadata
-		if !iter.Scan(&metadata.OperatorCode, &metadata.TravelDate, &metadata.FromStationCode, &metadata.ToStationCode, &metadata.UpdatedAt) {
+		if !iter.Scan(&metadata.OperatorCode, &metadata.TripDate, &metadata.FromStationCode, &metadata.ToStationCode, &metadata.UpdatedAt) {
 			break
 		}
-		key := routeMetadataKey{operatorCode: metadata.OperatorCode, travelDate: metadata.TravelDate, fromStation: metadata.FromStationCode, toStation: metadata.ToStationCode}
+		key := routeMetadataKey{operatorCode: metadata.OperatorCode, tripDate: metadata.TripDate, fromStation: metadata.FromStationCode, toStation: metadata.ToStationCode}
 		if current, exists := latest[key]; !exists || metadata.UpdatedAt.After(current.UpdatedAt) {
 			latest[key] = metadata
 		}
@@ -91,7 +91,7 @@ func (repository *TripDetailsMetadataRepository) ListStaleRouteMetadata(ctx cont
 
 type routeMetadataKey struct {
 	operatorCode string
-	travelDate   string
+	tripDate     string
 	fromStation  string
 	toStation    string
 }
@@ -101,7 +101,7 @@ func (repository *TripDetailsMetadataRepository) SaveScheduleMetadata(ctx contex
 	scheduleQuery := `INSERT INTO ` + metadataScheduleTable + `
 		(operator_code, schedule_code, travel_date, trip_code, trip_stage_code, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)`
-	if err := repository.session.Query(scheduleQuery, metadata.OperatorCode, metadata.ScheduleCode, metadata.TravelDate,
+	if err := repository.session.Query(scheduleQuery, metadata.OperatorCode, metadata.ScheduleCode, metadata.TripDate,
 		metadata.TripCode, metadata.TripStageCode, metadata.UpdatedAt).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("save Cassandra schedule metadata: %w", err)
 	}
@@ -125,10 +125,10 @@ func validIdentifier(value string) bool {
 }
 
 // FindStagesByRoute returns candidate stages for a Search route in metadata order.
-func (repository *TripDetailsMetadataRepository) FindStagesByRoute(ctx context.Context, operatorCode, fromCode, toCode, travelDate string) ([]domain.TripDetailsStageMetadata, error) {
+func (repository *TripDetailsMetadataRepository) FindStagesByRoute(ctx context.Context, operatorCode, fromCode, toCode, tripDate string) ([]domain.TripDetailsStageMetadata, error) {
 	query := `SELECT trip_code, trip_stage_code, updated_at FROM ` + metadataRouteTable + `
 		WHERE operator_code=? AND travel_date=? AND from_station_code=? AND to_station_code=?`
-	iter := repository.session.Query(query, operatorCode, travelDate, fromCode, toCode).WithContext(ctx).Iter()
+	iter := repository.session.Query(query, operatorCode, tripDate, fromCode, toCode).WithContext(ctx).Iter()
 	var results []domain.TripDetailsStageMetadata
 	for {
 		var result domain.TripDetailsStageMetadata
@@ -138,7 +138,7 @@ func (repository *TripDetailsMetadataRepository) FindStagesByRoute(ctx context.C
 		result.OperatorCode = operatorCode
 		result.FromStationCode = fromCode
 		result.ToStationCode = toCode
-		result.TravelDate = travelDate
+		result.TripDate = tripDate
 		results = append(results, result)
 	}
 	if err := iter.Close(); err != nil {
@@ -148,10 +148,10 @@ func (repository *TripDetailsMetadataRepository) FindStagesByRoute(ctx context.C
 }
 
 // FindStagesBySchedule returns candidate stages for one operator schedule and date.
-func (repository *TripDetailsMetadataRepository) FindStagesBySchedule(ctx context.Context, operatorCode, scheduleCode, travelDate string) ([]domain.TripDetailsStageMetadata, error) {
+func (repository *TripDetailsMetadataRepository) FindStagesBySchedule(ctx context.Context, operatorCode, scheduleCode, tripDate string) ([]domain.TripDetailsStageMetadata, error) {
 	query := `SELECT trip_code, trip_stage_code, updated_at FROM ` + metadataScheduleTable + `
 		WHERE operator_code=? AND schedule_code=? AND travel_date=?`
-	iter := repository.session.Query(query, operatorCode, scheduleCode, travelDate).WithContext(ctx).Iter()
+	iter := repository.session.Query(query, operatorCode, scheduleCode, tripDate).WithContext(ctx).Iter()
 	var results []domain.TripDetailsStageMetadata
 	for {
 		var result domain.TripDetailsStageMetadata
@@ -160,11 +160,29 @@ func (repository *TripDetailsMetadataRepository) FindStagesBySchedule(ctx contex
 		}
 		result.OperatorCode = operatorCode
 		result.ScheduleCode = scheduleCode
-		result.TravelDate = travelDate
+		result.TripDate = tripDate
 		results = append(results, result)
 	}
 	if err := iter.Close(); err != nil {
 		return nil, fmt.Errorf("find Cassandra schedule metadata: %w", err)
+	}
+	return results, nil
+}
+
+// ListRouteMetadata scans existing route metadata for the protected future-trip dashboard summary.
+func (repository *TripDetailsMetadataRepository) ListRouteMetadata(ctx context.Context) ([]domain.TripDetailsStageMetadata, error) {
+	query := `SELECT operator_code, travel_date, from_station_code, to_station_code, trip_code, trip_stage_code, updated_at FROM ` + metadataRouteTable
+	iter := repository.session.Query(query).WithContext(ctx).Iter()
+	results := make([]domain.TripDetailsStageMetadata, 0)
+	for {
+		var metadata domain.TripDetailsStageMetadata
+		if !iter.Scan(&metadata.OperatorCode, &metadata.TripDate, &metadata.FromStationCode, &metadata.ToStationCode, &metadata.TripCode, &metadata.TripStageCode, &metadata.UpdatedAt) {
+			break
+		}
+		results = append(results, metadata)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("list Cassandra route metadata for dashboard freshness: %w", err)
 	}
 	return results, nil
 }

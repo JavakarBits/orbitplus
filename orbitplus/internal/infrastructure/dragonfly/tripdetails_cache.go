@@ -52,6 +52,15 @@ func (repository *TripDetailsCacheRepository) GetJSON(ctx context.Context, key s
 	return value, true, nil
 }
 
+// ScanKeys returns one cursor-based page of matching keys from the configured Dragonfly database.
+func (repository *TripDetailsCacheRepository) ScanKeys(ctx context.Context, cursor uint64, pattern string, count int64) ([]string, uint64, error) {
+	keys, nextCursor, err := repository.client.Scan(ctx, cursor, pattern, count).Result()
+	if err != nil {
+		return nil, 0, fmt.Errorf("scan Dragonfly keys: %w", err)
+	}
+	return keys, nextCursor, nil
+}
+
 func (repository *TripDetailsCacheRepository) Close() error {
 	return repository.client.Close()
 }

@@ -18,7 +18,7 @@ type RouteLookup struct {
 	TripCode     string
 	FromCode     string
 	ToCode       string
-	TravelDate   string
+	TripDate     string
 }
 
 type TripDetailsContentReader interface {
@@ -41,11 +41,11 @@ func NewTripDetailsReadService(content TripDetailsContentReader, metadata TripDe
 }
 
 func ValidSearchLookup(lookup RouteLookup) bool {
-	return validLookupComponents(lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TravelDate)
+	return validLookupComponents(lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 }
 
 func ValidBusMapLookup(lookup RouteLookup) bool {
-	return validLookupComponents(lookup.OperatorCode, lookup.TripCode, lookup.FromCode, lookup.ToCode, lookup.TravelDate)
+	return validLookupComponents(lookup.OperatorCode, lookup.TripCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 }
 
 func validLookupComponents(values ...string) bool {
@@ -70,7 +70,7 @@ func filterStagesByTripCode(candidates []domain.TripDetailsStageMetadata, tripCo
 // Search reconstructs every selected persisted stage for a route.
 func (service *TripDetailsReadService) Search(ctx context.Context, lookup RouteLookup) ([]json.RawMessage, error) {
 	service.logLookup("search", lookup)
-	candidates, err := service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TravelDate)
+	candidates, err := service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 	if err != nil {
 		service.logFailure("search metadata lookup")
 		return nil, err
@@ -134,7 +134,7 @@ func (service *TripDetailsReadService) Search(ctx context.Context, lookup RouteL
 // canonical reconstruction behavior.
 func (service *TripDetailsReadService) BusMap(ctx context.Context, lookup RouteLookup) (json.RawMessage, error) {
 	service.logLookup("busmap", lookup)
-	candidates, err := service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TravelDate)
+	candidates, err := service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 	if err != nil {
 		service.logFailure("busmap metadata lookup")
 		return nil, err
@@ -219,13 +219,13 @@ func isCompleteBusMapResponse(value []byte) bool {
 
 func (service *TripDetailsReadService) logLookup(operation string, lookup RouteLookup) {
 	if service.logger != nil {
-		service.logger.Printf("TripDetails %s lookup operatorCode=%q tripCode=%q fromCode=%q toCode=%q travelDate=%q", operation, lookup.OperatorCode, lookup.TripCode, lookup.FromCode, lookup.ToCode, lookup.TravelDate)
+		service.logger.Printf("TripDetails %s lookup operatorCode=%q tripCode=%q fromCode=%q toCode=%q tripDate=%q", operation, lookup.OperatorCode, lookup.TripCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 	}
 }
 
 func (service *TripDetailsReadService) logCandidate(operation string, metadata domain.TripDetailsStageMetadata) {
 	if service.logger != nil {
-		service.logger.Printf("TripDetails %s operatorCode=%q tripCode=%q tripStageCode=%q fromCode=%q toCode=%q travelDate=%q", operation, metadata.OperatorCode, metadata.TripCode, metadata.TripStageCode, metadata.FromStationCode, metadata.ToStationCode, metadata.TravelDate)
+		service.logger.Printf("TripDetails %s operatorCode=%q tripCode=%q tripStageCode=%q fromCode=%q toCode=%q tripDate=%q", operation, metadata.OperatorCode, metadata.TripCode, metadata.TripStageCode, metadata.FromStationCode, metadata.ToStationCode, metadata.TripDate)
 	}
 }
 

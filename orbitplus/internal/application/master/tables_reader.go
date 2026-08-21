@@ -24,7 +24,7 @@ type TablesMetadataReader interface {
 // RouteMetadataLookup identifies one route metadata partition.
 type RouteMetadataLookup struct {
 	OperatorCode string
-	TravelDate   string
+	TripDate     string
 	FromCode     string
 	ToCode       string
 }
@@ -33,7 +33,7 @@ type RouteMetadataLookup struct {
 type ScheduleMetadataLookup struct {
 	OperatorCode string
 	ScheduleCode string
-	TravelDate   string
+	TripDate     string
 }
 
 // TablesService provides read-only Cassandra metadata for the protected UI.
@@ -51,10 +51,10 @@ func (service *TablesService) FindRouteMetadata(ctx context.Context, lookup Rout
 	if service == nil || service.metadata == nil {
 		return nil, ErrTablesNotConfigured
 	}
-	if !validTablesLookup(lookup.OperatorCode, lookup.TravelDate, lookup.FromCode, lookup.ToCode) {
+	if !validTablesLookup(lookup.OperatorCode, lookup.TripDate, lookup.FromCode, lookup.ToCode) {
 		return nil, ErrInvalidTablesLookup
 	}
-	return service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TravelDate)
+	return service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 }
 
 // FindScheduleMetadata returns metadata for a complete operator/schedule/travel key.
@@ -62,10 +62,10 @@ func (service *TablesService) FindScheduleMetadata(ctx context.Context, lookup S
 	if service == nil || service.metadata == nil {
 		return nil, ErrTablesNotConfigured
 	}
-	if !validTablesLookup(lookup.OperatorCode, lookup.ScheduleCode, lookup.TravelDate) {
+	if !validTablesLookup(lookup.OperatorCode, lookup.ScheduleCode, lookup.TripDate) {
 		return nil, ErrInvalidTablesLookup
 	}
-	return service.metadata.FindStagesBySchedule(ctx, lookup.OperatorCode, lookup.ScheduleCode, lookup.TravelDate)
+	return service.metadata.FindStagesBySchedule(ctx, lookup.OperatorCode, lookup.ScheduleCode, lookup.TripDate)
 }
 
 func validTablesLookup(values ...string) bool {

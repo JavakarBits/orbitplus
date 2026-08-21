@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Reports | OrbitPlus Admin</title><link rel="stylesheet" href="/orbitplus/styles.css"></head>
+<body>
+  <header class="portal-header"><a class="brand" href="/orbitplus/">OrbitPlus <span>Admin</span></a><nav class="portal-nav" aria-label="Primary navigation"><a href="/orbitplus/">Dashboard</a><details class="reports-menu"><summary>Operations</summary><div class="reports-menu-list"><a href="/orbitplus/master">Operations overview</a><a href="/orbitplus/cache">Cache viewer</a><a href="/orbitplus/rabbitmq">RabbitMQ</a><a href="/orbitplus/tables/route-metadata">Route lookup</a><a href="/orbitplus/tables/schedule-metadata">Schedule lookup</a><a href="/orbitplus/tables">Metadata tables</a></div></details><details class="reports-menu active"><summary>Reports</summary><div class="reports-menu-list"><a href="/orbitplus/reports/queue-jobs">Queue Metrics</a><a href="/orbitplus/reports/queue-analytics">Queue Analytics</a></div></details></nav><form action="/orbitplus/logout" method="post"><button class="header-button" type="submit">Log out</button></form></header>
+  <main class="portal-shell">
+    <section class="page-intro"><div><p class="eyebrow">REPORTS</p><h1>Operational reporting</h1><p>Review detailed queue records and sample-scoped operational analytics.</p></div></section>
+    <section class="feature-grid">
+      <a class="feature-card" href="/orbitplus/reports/queue-jobs"><p class="eyebrow">DETAIL</p><h2>Queue Metrics</h2><span>Inspect recent Queue Metrics lifecycle records and refine them with filters.</span><b>Open Queue Metrics →</b></a>
+      <a class="feature-card" href="/orbitplus/reports/queue-analytics"><p class="eyebrow">ANALYTICS</p><h2>Queue Analytics</h2><span>Review status distribution, completion performance, action breakdown, and failures.</span><b>Open analytics →</b></a>
+    </section>
+  </main>
+</body>
+</html>

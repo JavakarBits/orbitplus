@@ -1,91 +1,25 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Queue Jobs | OrbitPlus Master</title>
-  <link rel="stylesheet" href="/orbitplus/styles.css">
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Queue Metrics | OrbitPlus Admin</title><link rel="stylesheet" href="/orbitplus/styles.css"></head>
 <body>
-  <header class="report-header">
-    <a class="brand" href="/orbitplus/">OrbitPlus <span>Master</span></a>
-    <a class="back-link" href="/orbitplus/">← Home</a>
-  </header>
-  <main class="report-shell">
-    <div class="report-title">
-      <div><p class="eyebrow">REPORTS</p><h1>Queue Jobs</h1></div>
-      <button class="filter-button" type="button" disabled>Filters</button>
-    </div>
-    <div class="report-tabs" aria-label="Queue job status views">
-      <button class="active" data-status="" type="button">All Jobs</button><button data-status="QUEUED" type="button">Queued</button>
-      <button data-status="COMPLETED" type="button">Completed</button><button data-status="DEAD" type="button">Dead</button>
-    </div>
-    <section class="report-table" aria-label="Queue jobs report">
-      <div class="table-scroll"><table>
-        <thead><tr><th>Reference ID</th><th>Activity Type</th><th>Action Type</th><th>Operator</th><th>From</th><th>To</th><th>Travel Date</th><th>Status</th><th>Queued At</th><th>Completed At</th><th>Failure Message</th></tr></thead>
-        <tbody id="queue-jobs-body"></tbody>
-      </table></div>
-    </section>
-  </main>
-  <script>
-    const reportBody = document.getElementById("queue-jobs-body");
-    const statusButtons = document.querySelectorAll(".report-tabs button");
-    let jobs = [];
-    let statusFilter = "";
-
-    function cell(row, value, className) {
-      const element = document.createElement("td");
-      if (className) element.className = className;
-      element.textContent = value || "—";
-      row.append(element);
-    }
-
-    function formatTime(value) {
-      return value ? new Date(value).toLocaleString() : "—";
-    }
-
-    function showEmpty(title, message) {
-      reportBody.replaceChildren();
-      const row = document.createElement("tr");
-      const cell = document.createElement("td");
-      cell.colSpan = 11;
-      cell.className = "empty-state";
-      const heading = document.createElement("strong");
-      const detail = document.createElement("span");
-      heading.textContent = title;
-      detail.textContent = message;
-      cell.append(heading, detail);
-      row.append(cell);
-      reportBody.append(row);
-    }
-
-    function renderJobs() {
-      const visibleJobs = jobs.filter((job) => !statusFilter || job.queueStatus === statusFilter);
-      if (!visibleJobs.length) {
-        showEmpty("No queue jobs found", statusFilter ? "No jobs match this status." : "No queue jobs have been recorded yet.");
-        return;
-      }
-      reportBody.replaceChildren();
-      visibleJobs.forEach((job) => {
-        const row = document.createElement("tr");
-        cell(row, job.referenceId); cell(row, job.activityType); cell(row, job.actionType); cell(row, job.operatorCode);
-        cell(row, job.fromStation); cell(row, job.toStation); cell(row, job.travelDate);
-        cell(row, job.queueStatus, "status-cell status-" + (job.queueStatus || "").toLowerCase());
-        cell(row, formatTime(job.queuedAt)); cell(row, formatTime(job.completedAt)); cell(row, job.failureMessage);
-        reportBody.append(row);
-      });
-    }
-
-    statusButtons.forEach((button) => button.addEventListener("click", () => {
-      statusFilter = button.dataset.status;
-      statusButtons.forEach((item) => item.classList.toggle("active", item === button));
-      renderJobs();
-    }));
-
-    fetch("/orbitplus/api/reports/queue-jobs", { credentials: "same-origin" })
-      .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((response) => { jobs = response.data || []; renderJobs(); })
-      .catch(() => showEmpty("Unable to load queue jobs", "Refresh the page after the service is connected to Cassandra."));
-  </script>
+<header class="portal-header"><a class="brand" href="/orbitplus/">OrbitPlus <span>Admin</span></a><nav class="portal-nav" aria-label="Primary navigation"><a href="/orbitplus/">Dashboard</a><details class="reports-menu"><summary>Operations</summary><div class="reports-menu-list"><a href="/orbitplus/master">Operations overview</a><a href="/orbitplus/cache">Cache viewer</a><a href="/orbitplus/rabbitmq">RabbitMQ</a><a href="/orbitplus/tables/route-metadata">Route lookup</a><a href="/orbitplus/tables/schedule-metadata">Schedule lookup</a><a href="/orbitplus/tables">Metadata tables</a></div></details><details class="reports-menu active"><summary>Reports</summary><div class="reports-menu-list"><a class="active" href="/orbitplus/reports/queue-jobs">Queue Metrics</a><a href="/orbitplus/reports/queue-analytics">Queue Analytics</a></div></details></nav><form action="/orbitplus/logout" method="post"><button class="header-button" type="submit">Log out</button></form></header>
+<main class="portal-shell">
+<section class="page-intro"><div><p class="eyebrow">REPORTS / QUEUE METRICS</p><h1>Queue Metrics</h1><p>Filter the loaded Queue Metrics lifecycle records.</p></div><a class="secondary-button" href="/orbitplus/reports/queue-analytics">View analytics</a></section>
+<section class="report-filter-panel" aria-label="Queue Metrics filters"><div class="filter-panel-heading"><div><p class="eyebrow">FILTERS</p><h2>Refine Queue Metrics</h2></div><button class="text-button" id="reset-filters" type="button">Reset filters</button></div><div class="report-filters"><label>Status<select id="status-filter"><option value="">All statuses</option><option value="RECEIVED">Received</option><option value="QUEUED">Queued</option><option value="COMPLETED">Completed</option><option value="DEAD">Dead</option></select></label><label>Activity type<select id="activity-filter"><option value="">All activity types</option></select></label><label>Action type<select id="action-filter"><option value="">All action types</option></select></label><label>Operator<select id="operator-filter"><option value="">All operators</option></select></label><label>Reference ID<input id="reference-filter" type="search" placeholder="Search reference ID"></label></div></section>
+<p class="scope-note" id="queue-scope">Loading Queue Metrics records…</p>
+<section class="report-table" aria-label="Queue Metrics report"><div class="table-scroll"><table><thead><tr><th>Reference ID</th><th>Activity Type</th><th>Action Type</th><th>Operator</th><th>From</th><th>To</th><th>Trip Date</th><th>Status</th><th>Queued At</th><th>Completed At</th><th>Failure Message</th></tr></thead><tbody id="queue-jobs-body"></tbody></table></div></section>
+</main>
+<script>
+const reportBody = document.getElementById("queue-jobs-body"), statusFilter = document.getElementById("status-filter"), activityFilter = document.getElementById("activity-filter"), actionFilter = document.getElementById("action-filter"), operatorFilter = document.getElementById("operator-filter"), referenceFilter = document.getElementById("reference-filter"); let jobs = [];
+const cell = (row, value, className) => { const element = document.createElement("td"); if (className) element.className = className; element.textContent = value || "—"; row.append(element); };
+const formatTime = (value) => value ? new Date(value).toLocaleString() : "—";
+function showEmpty(title, message) { reportBody.replaceChildren(); const row = document.createElement("tr"), element = document.createElement("td"), heading = document.createElement("strong"), detail = document.createElement("span"); element.colSpan = 11; element.className = "empty-state"; heading.textContent = title; detail.textContent = message; element.append(heading, detail); row.append(element); reportBody.append(row); }
+function addFilterOptions(select, values) { [...new Set(values.filter(Boolean))].sort().forEach((value) => { const option = document.createElement("option"); option.value = value; option.textContent = value; select.append(option); }); }
+function matchingJobs() { const reference = referenceFilter.value.trim().toLowerCase(); return jobs.filter((job) => (!statusFilter.value || job.queueStatus === statusFilter.value) && (!activityFilter.value || job.activityType === activityFilter.value) && (!actionFilter.value || job.actionType === actionFilter.value) && (!operatorFilter.value || job.operatorCode === operatorFilter.value) && (!reference || (job.referenceId || "").toLowerCase().includes(reference))); }
+function renderJobs() { const visible = matchingJobs(); if (!visible.length) { showEmpty("No Queue Metrics found", "No loaded records match the selected filters."); return; } reportBody.replaceChildren(); visible.forEach((job) => { const row = document.createElement("tr"); cell(row, job.referenceId); cell(row, job.activityType); cell(row, job.actionType); cell(row, job.operatorCode); cell(row, job.fromStation); cell(row, job.toStation); cell(row, job.tripDate); cell(row, job.queueStatus, "status-cell status-" + (job.queueStatus || "").toLowerCase()); cell(row, formatTime(job.queuedAt)); cell(row, formatTime(job.completedAt)); cell(row, job.failureMessage); reportBody.append(row); }); }
+[statusFilter, activityFilter, actionFilter, operatorFilter, referenceFilter].forEach((element) => element.addEventListener(element === referenceFilter ? "input" : "change", renderJobs));
+document.getElementById("reset-filters").addEventListener("click", () => { statusFilter.value = ""; activityFilter.value = ""; actionFilter.value = ""; operatorFilter.value = ""; referenceFilter.value = ""; renderJobs(); });
+fetch("/orbitplus/api/reports/queue-jobs", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : Promise.reject()).then((response) => { jobs = response.data || []; document.getElementById("queue-scope").textContent = "Filters apply to the loaded Queue Metrics records (maximum " + jobs.length + ")."; addFilterOptions(activityFilter, jobs.map((job) => job.activityType)); addFilterOptions(actionFilter, jobs.map((job) => job.actionType)); addFilterOptions(operatorFilter, jobs.map((job) => job.operatorCode)); renderJobs(); }).catch(() => showEmpty("Unable to load Queue Metrics", "Refresh the page after the service is connected to Cassandra."));
+</script>
 </body>
 </html>

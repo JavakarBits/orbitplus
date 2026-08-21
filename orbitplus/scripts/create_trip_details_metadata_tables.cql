@@ -53,4 +53,3 @@ CREATE TABLE IF NOT EXISTS queue_metrix (
     updated_at timestamp
 );
 
-

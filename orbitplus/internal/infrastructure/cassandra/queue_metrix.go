@@ -6,6 +6,7 @@ import (
 
 	"github.com/gocql/gocql"
 
+	"orbitplusmaster/internal/application/master"
 	"orbitplusmaster/internal/domain"
 )
 
@@ -45,7 +46,7 @@ func (repository *QueueMetrixRepository) SaveReceived(ctx context.Context, metri
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if err := repository.session.Query(query, metric.ReferenceID, metric.ActivityType, metric.ActionType,
 		metric.OperatorCode, metric.ScheduleCode, metric.TripCode, metric.SourceStationCode,
-		metric.DestinationStationCode, metric.TravelDate, metric.Zone, metric.QueueStatus,
+		metric.DestinationStationCode, metric.TripDate, metric.Zone, metric.QueueStatus,
 		nil, nil, nil, metric.FailureMessage, metric.UpdatedAt).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("save queue metrix received record: %w", err)
 	}
@@ -56,7 +57,7 @@ func (repository *QueueMetrixRepository) SaveReceived(ctx context.Context, metri
 func (repository *QueueMetrixRepository) MarkQueued(ctx context.Context, metric domain.QueueMetrix) error {
 	query := `UPDATE ` + queueMetrixTable + ` SET queue_status=?, trip_code=?, travel_date=?,
 		queued_at=?, failure_message=?, updated_at=? WHERE reference_id=?`
-	if err := repository.session.Query(query, metric.QueueStatus, metric.TripCode, metric.TravelDate,
+	if err := repository.session.Query(query, metric.QueueStatus, metric.TripCode, metric.TripDate,
 		metric.QueuedAt, metric.FailureMessage, metric.UpdatedAt, metric.ReferenceID).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("mark queue metrix queued: %w", err)
 	}
@@ -101,7 +102,7 @@ func (repository *QueueMetrixRepository) List(ctx context.Context, limit int) ([
 		var job domain.QueueMetrix
 		if !iter.Scan(&job.ReferenceID, &job.ActivityType, &job.ActionType, &job.OperatorCode,
 			&job.ScheduleCode, &job.TripCode, &job.SourceStationCode, &job.DestinationStationCode,
-			&job.TravelDate, &job.Zone, &job.QueueStatus, &job.QueuedAt, &job.CompletedAt,
+			&job.TripDate, &job.Zone, &job.QueueStatus, &job.QueuedAt, &job.CompletedAt,
 			&job.DeadLetteredAt, &job.FailureMessage, &job.UpdatedAt) {
 			break
 		}
@@ -111,4 +112,47 @@ func (repository *QueueMetrixRepository) List(ctx context.Context, limit int) ([
 		return nil, fmt.Errorf("list queue metrix records: %w", err)
 	}
 	return jobs, nil
+}
+
+// ScanTripHistory walks queue_metrix with driver paging and applies the trip or
+// route match in Go. queue_metrix is keyed by reference_id only, so no
+// server-side predicate exists for this lookup; ALLOW FILTERING is deliberately
+// avoided because it lets one coordinator accumulate an unbounded result set.
+// The scan reads at LOCAL_ONE and stops at the caller's row, match, or deadline
+// limit, reporting how much work it performed.
+func (repository *QueueMetrixRepository) ScanTripHistory(ctx context.Context, query master.TripHistoryQuery, options master.TripHistoryScanOptions) (master.TripHistoryScanResult, error) {
+	statement := `SELECT reference_id, activity_type, action_type, operator_code, schedule_code, trip_code,
+		from_station, to_station, travel_date, zone, queue_status, queued_at, completed_at,
+		dead_lettered_at, failure_message, updated_at FROM ` + queueMetrixTable
+	iter := repository.session.Query(statement).WithContext(ctx).Consistency(gocql.LocalOne).PageSize(options.PageSize).Iter()
+	result := master.TripHistoryScanResult{Records: make([]domain.QueueMetrix, 0)}
+	for {
+		var record domain.QueueMetrix
+		if !iter.Scan(&record.ReferenceID, &record.ActivityType, &record.ActionType, &record.OperatorCode,
+			&record.ScheduleCode, &record.TripCode, &record.SourceStationCode, &record.DestinationStationCode,
+			&record.TripDate, &record.Zone, &record.QueueStatus, &record.QueuedAt, &record.CompletedAt,
+			&record.DeadLetteredAt, &record.FailureMessage, &record.UpdatedAt) {
+			break
+		}
+		result.RowsExamined++
+		if query.Matches(record) {
+			result.Records = append(result.Records, record)
+			if len(result.Records) >= options.MaxMatches {
+				result.Truncated = true
+				break
+			}
+		}
+		if result.RowsExamined >= options.MaxRowsExamined || ctx.Err() != nil {
+			result.Truncated = true
+			break
+		}
+	}
+	if err := iter.Close(); err != nil {
+		if ctx.Err() != nil {
+			result.Truncated = true
+			return result, nil
+		}
+		return master.TripHistoryScanResult{}, fmt.Errorf("scan queue metrix trip history: %w", err)
+	}
+	return result, nil
 }

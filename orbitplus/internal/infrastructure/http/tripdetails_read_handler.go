@@ -26,7 +26,7 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 		OperatorCode: request.PathValue("operatorCode"),
 		FromCode:     request.PathValue("fromCode"),
 		ToCode:       request.PathValue("toCode"),
-		TravelDate:   request.PathValue("tripDate"),
+		TripDate:     request.PathValue("tripDate"),
 	}
 	if !master.ValidSearchLookup(lookup) {
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
@@ -50,7 +50,7 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 		TripCode:     request.PathValue("tripCode"),
 		FromCode:     request.PathValue("fromStationCode"),
 		ToCode:       request.PathValue("toStationCode"),
-		TravelDate:   request.PathValue("travelDate"),
+		TripDate:     request.PathValue("travelDate"),
 	}
 	if !master.ValidBusMapLookup(lookup) {
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")

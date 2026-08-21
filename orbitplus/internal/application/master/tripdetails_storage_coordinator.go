@@ -138,16 +138,16 @@ func (persistence *TripDetailsStorage) storeEntry(ctx context.Context, actionTyp
 		return persistence.storeBusMapCache(ctx, operatorCode, tripCode, tripStageCode, entry, index)
 	}
 
-	travelDate := stringField(entry, "travelDate")
+	tripDate := stringField(entry, "travelDate")
 	fromStationCode := nestedStringField(entry, "fromStation", "code")
 	toStationCode := nestedStringField(entry, "toStation", "code")
-	if err := requireKeyComponents(operatorCode, tripCode, tripStageCode, travelDate, fromStationCode, toStationCode); err != nil {
+	if err := requireKeyComponents(operatorCode, tripCode, tripStageCode, tripDate, fromStationCode, toStationCode); err != nil {
 		return err
 	}
 	if err := persistence.storeSearchCache(ctx, operatorCode, tripCode, tripStageCode, entry, index); err != nil {
 		return err
 	}
-	return persistence.storeSearchMetadata(ctx, operatorCode, tripCode, tripStageCode, travelDate, fromStationCode, toStationCode, entry, index)
+	return persistence.storeSearchMetadata(ctx, operatorCode, tripCode, tripStageCode, tripDate, fromStationCode, toStationCode, entry, index)
 }
 
 func resolveTripDetailsPayload(value any) (map[string]any, string, string, string, error) {

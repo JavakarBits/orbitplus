@@ -25,15 +25,15 @@ func (persistence *TripDetailsStorage) storeSearchBusMapEntries(ctx context.Cont
 			operatorCode = nestedStringField(entry, "operator", "code")
 		}
 		tripCode, tripStageCode := stringField(entry, "tripCode"), stringField(entry, "tripStageCode")
-		travelDate := stringField(entry, "travelDate")
+		tripDate := stringField(entry, "travelDate")
 		fromCode, toCode := nestedStringField(entry, "fromStation", "code"), nestedStringField(entry, "toStation", "code")
-		if err := requireKeyComponents(operatorCode, tripCode, tripStageCode, travelDate, fromCode, toCode); err != nil {
+		if err := requireKeyComponents(operatorCode, tripCode, tripStageCode, tripDate, fromCode, toCode); err != nil {
 			return err
 		}
 		if err := persistence.storeSearchCache(ctx, operatorCode, tripCode, tripStageCode, entry, index); err != nil {
 			return fmt.Errorf("store SEARCHBUSMAP Search cache: %w", err)
 		}
-		if err := persistence.storeSearchMetadata(ctx, operatorCode, tripCode, tripStageCode, travelDate, fromCode, toCode, entry, index); err != nil {
+		if err := persistence.storeSearchMetadata(ctx, operatorCode, tripCode, tripStageCode, tripDate, fromCode, toCode, entry, index); err != nil {
 			return fmt.Errorf("store SEARCHBUSMAP metadata: %w", err)
 		}
 		if err := persistence.storeBusMapCache(ctx, operatorCode, tripCode, tripStageCode, entry, index); err != nil {

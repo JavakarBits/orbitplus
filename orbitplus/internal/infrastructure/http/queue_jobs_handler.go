@@ -46,10 +46,12 @@ type queueJobReportItem struct {
 	OperatorCode   string     `json:"operatorCode"`
 	FromStation    string     `json:"fromStation"`
 	ToStation      string     `json:"toStation"`
-	TravelDate     string     `json:"travelDate"`
+	TripDate       string     `json:"tripDate"`
 	QueueStatus    string     `json:"queueStatus"`
 	QueuedAt       *time.Time `json:"queuedAt"`
 	CompletedAt    *time.Time `json:"completedAt"`
+	DeadLetteredAt *time.Time `json:"deadLetteredAt"`
+	UpdatedAt      *time.Time `json:"updatedAt"`
 	FailureMessage string     `json:"failureMessage"`
 }
 
@@ -57,8 +59,9 @@ func newQueueJobReportItem(job domain.QueueMetrix) queueJobReportItem {
 	return queueJobReportItem{
 		ReferenceID: job.ReferenceID, ActivityType: job.ActivityType, ActionType: job.ActionType,
 		OperatorCode: job.OperatorCode, FromStation: job.SourceStationCode, ToStation: job.DestinationStationCode,
-		TravelDate: job.TravelDate, QueueStatus: job.QueueStatus, QueuedAt: optionalReportTime(job.QueuedAt),
-		CompletedAt: optionalReportTime(job.CompletedAt), FailureMessage: job.FailureMessage,
+		TripDate: job.TripDate, QueueStatus: job.QueueStatus, QueuedAt: optionalReportTime(job.QueuedAt),
+		CompletedAt: optionalReportTime(job.CompletedAt), DeadLetteredAt: optionalReportTime(job.DeadLetteredAt),
+		UpdatedAt: optionalReportTime(job.UpdatedAt), FailureMessage: job.FailureMessage,
 	}
 }
 

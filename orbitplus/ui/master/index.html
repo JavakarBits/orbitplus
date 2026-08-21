@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Master | OrbitPlus Admin</title><link rel="stylesheet" href="/orbitplus/styles.css"></head>
+<body>
+  <header class="portal-header"><a class="brand" href="/orbitplus/">OrbitPlus <span>Admin</span></a><nav class="portal-nav" aria-label="Primary navigation"><a href="/orbitplus/">Dashboard</a><details class="reports-menu active"><summary>Operations</summary><div class="reports-menu-list"><a class="active" href="/orbitplus/master">Operations overview</a><a href="/orbitplus/cache">Cache viewer</a><a href="/orbitplus/rabbitmq">RabbitMQ</a><a href="/orbitplus/tables/route-metadata">Route lookup</a><a href="/orbitplus/tables/schedule-metadata">Schedule lookup</a><a href="/orbitplus/tables">Metadata tables</a></div></details><details class="reports-menu"><summary>Reports</summary><div class="reports-menu-list"><a href="/orbitplus/reports/queue-jobs">Queue Metrics</a><a href="/orbitplus/reports/queue-analytics">Queue Analytics</a></div></details></nav><form action="/orbitplus/logout" method="post"><button class="header-button" type="submit">Log out</button></form></header>
+  <main class="portal-shell">
+    <section class="page-intro"><div><p class="eyebrow">MASTER</p><h1>Operations tools</h1><p>Read-only tools for reviewing queues and stored TripDetails metadata.</p></div></section>
+    <section class="feature-grid">
+      <a class="feature-card" href="/orbitplus/reports/queue-jobs"><p class="eyebrow">QUEUE</p><h2>Queue Metrics</h2><span>Review and filter lifecycle status, identifiers, and failure messages for recent Worker jobs.</span><b>Open report →</b></a>
+      <a class="feature-card" href="/orbitplus/tables/route-metadata"><p class="eyebrow">METADATA</p><h2>Route lookup</h2><span>Find stored stages using operator, trip date, from station, and to station.</span><b>Open lookup →</b></a>
+      <a class="feature-card" href="/orbitplus/tables/schedule-metadata"><p class="eyebrow">METADATA</p><h2>Schedule lookup</h2><span>Find stored stages using operator, schedule code, and trip date.</span><b>Open lookup →</b></a>
+      <a class="feature-card" href="/orbitplus/tables"><p class="eyebrow">DATA</p><h2>Metadata tables</h2><span>Browse the protected read-only metadata tools available to Master operators.</span><b>Open tables →</b></a>
+      <a class="feature-card" href="/orbitplus/cache"><p class="eyebrow">CACHE</p><h2>Cache viewer</h2><span>Browse all Dragonfly cache keys and stored data in pages.</span><b>Open cache viewer →</b></a>
+      <a class="feature-card" href="/orbitplus/rabbitmq"><p class="eyebrow">RABBITMQ</p><h2>Broker dashboard</h2><span>Review Management API queue, exchange, and connection data.</span><b>Open RabbitMQ →</b></a>
+    </section>
+  </main>
+</body>
+</html>

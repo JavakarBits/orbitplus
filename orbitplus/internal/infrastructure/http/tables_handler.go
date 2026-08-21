@@ -25,7 +25,7 @@ func NewTablesHandler(service *master.TablesService) *TablesHandler {
 func (handler *TablesHandler) ServeRouteMetadata(response http.ResponseWriter, request *http.Request) {
 	lookup := master.RouteMetadataLookup{
 		OperatorCode: request.URL.Query().Get("operator"),
-		TravelDate:   request.URL.Query().Get("travel"),
+		TripDate:     request.URL.Query().Get("travel"),
 		FromCode:     request.URL.Query().Get("from"),
 		ToCode:       request.URL.Query().Get("to"),
 	}
@@ -39,7 +39,7 @@ func (handler *TablesHandler) ServeScheduleMetadata(response http.ResponseWriter
 	lookup := master.ScheduleMetadataLookup{
 		OperatorCode: request.URL.Query().Get("operator"),
 		ScheduleCode: request.URL.Query().Get("schedule"),
-		TravelDate:   request.URL.Query().Get("travel"),
+		TripDate:     request.URL.Query().Get("travel"),
 	}
 	handler.serveMetadata(response, "schedule metadata", func() ([]domain.TripDetailsStageMetadata, error) {
 		return handler.service.FindScheduleMetadata(request.Context(), lookup)
@@ -78,7 +78,7 @@ func (handler *TablesHandler) writeError(response http.ResponseWriter, operation
 type metadataTableItem struct {
 	OperatorCode  string     `json:"operatorCode"`
 	ScheduleCode  string     `json:"scheduleCode"`
-	TravelDate    string     `json:"travelDate"`
+	TripDate      string     `json:"tripDate"`
 	FromStation   string     `json:"fromStation"`
 	ToStation     string     `json:"toStation"`
 	TripCode      string     `json:"tripCode"`
@@ -88,7 +88,7 @@ type metadataTableItem struct {
 
 func newMetadataTableItem(metadata domain.TripDetailsStageMetadata) metadataTableItem {
 	return metadataTableItem{OperatorCode: metadata.OperatorCode, ScheduleCode: metadata.ScheduleCode,
-		TravelDate: metadata.TravelDate, FromStation: metadata.FromStationCode, ToStation: metadata.ToStationCode,
+		TripDate: metadata.TripDate, FromStation: metadata.FromStationCode, ToStation: metadata.ToStationCode,
 		TripCode: metadata.TripCode, TripStageCode: metadata.TripStageCode, UpdatedAt: optionalTablesTime(metadata.UpdatedAt)}
 }
 

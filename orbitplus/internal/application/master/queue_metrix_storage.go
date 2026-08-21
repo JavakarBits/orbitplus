@@ -14,7 +14,7 @@ type QueueMetrixStorage interface {
 	MarkDead(context.Context, domain.QueueMetrix) error
 }
 
-// QueueMetrixReader lists queue lifecycle records for the report UI.
+// QueueMetrixReader lists queue lifecycle records for reports and analytics.
 type QueueMetrixReader interface {
 	List(context.Context, int) ([]domain.QueueMetrix, error)
 }

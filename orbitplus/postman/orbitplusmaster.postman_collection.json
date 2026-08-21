@@ -46,6 +46,14 @@
     },
     { "name": "GET Health", "request": { "method": "GET", "url": "http://localhost:8082/health" } },
     {
+      "name": "GET Trip Analyzer History (protected UI session)",
+      "request": {
+        "method": "GET",
+        "description": "Queue lifecycle history from queue_metrix. Requires operatorCode plus a tripCode or at least one of tripDate, fromStation, toStation. Trip code only matches busmap-family records, so add the route selectors to include search-family activities. Requires an authenticated protected UI session.",
+        "url": "http://localhost:8082/orbitplus/api/admin/trip-history?operatorCode=bits&tripCode=2N38731S260820D&tripDate=2026-08-20&fromStation=STF17D52&toStation=STF17D51"
+      }
+    },
+    {
       "name": "GET Search (persisted)",
       "request": {
         "method": "GET",

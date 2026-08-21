@@ -20,7 +20,7 @@ type QueueMetrix struct {
 	TripCode               string
 	SourceStationCode      string
 	DestinationStationCode string
-	TravelDate             string
+	TripDate               string
 	Zone                   string
 	QueueStatus            string
 	QueuedAt               time.Time

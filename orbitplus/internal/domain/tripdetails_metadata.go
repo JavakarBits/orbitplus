@@ -8,7 +8,7 @@ type TripDetailsStageMetadata struct {
 	OperatorCode    string
 	TripCode        string
 	ScheduleCode    string
-	TravelDate      string
+	TripDate        string
 	FromStationCode string
 	ToStationCode   string
 	TripStageCode   string
