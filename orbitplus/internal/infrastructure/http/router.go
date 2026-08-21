@@ -9,8 +9,11 @@ import (
 )
 
 // NewRouter builds HTTP routing for the protected UI, ingestion, health, and persisted read APIs.
-func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, uiAccessAuth *UIAccessAuth) http.Handler {
-	readHandler := NewTripDetailsReadHandler(readService)
+// freshnessVerifier may be nil, which leaves the cached read path untouched and
+// makes a Cache_Flag value of 0 report the live feature as unconfigured rather
+// than silently serving the cached copy as though it were live.
+func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, uiAccessAuth *UIAccessAuth, freshnessVerifier *master.CacheFreshnessVerifier) http.Handler {
+	readHandler := NewTripDetailsReadHandler(readService, freshnessVerifier)
 	queueJobsHandler := NewQueueJobsReportHandler(queueJobsService)
 	queueDashboardHandler := NewQueueDashboardHandler(queueJobsService)
 	systemHealthHandler := NewSystemHealthHandler(startedAt)
