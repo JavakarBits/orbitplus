@@ -6,16 +6,17 @@ import (
 )
 
 // storeSearchBusMapEntries persists combined Search and BusMap Worker results.
-func (persistence *TripDetailsStorage) storeSearchBusMapEntries(ctx context.Context, payload map[string]any, envelope, envelopeOperatorCode, suppliedActionType string) error {
+func (persistence *TripDetailsStorage) storeSearchBusMapEntries(ctx context.Context, payload map[string]any, envelope, envelopeOperatorCode, suppliedActionType string) ([]string, error) {
 	entries, _, _, err := extractEntries(payload, envelope, searchBusMapAction)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	tripCodes := make([]string, 0, len(entries))
 	persistence.logger.Printf("TripDetails SEARCHBUSMAP persistence started: envelope=%s actionType=%q entries=%d", envelope, suppliedActionType, len(entries))
 	for index, rawEntry := range entries {
 		entry, ok := rawEntry.(map[string]any)
 		if !ok {
-			return errMissingStorageIdentifiers
+			return tripCodes, errMissingStorageIdentifiers
 		}
 		operatorCode := envelopeOperatorCode
 		if operatorCode == "" {
@@ -28,18 +29,19 @@ func (persistence *TripDetailsStorage) storeSearchBusMapEntries(ctx context.Cont
 		tripDate := stringField(entry, "travelDate")
 		fromCode, toCode := nestedStringField(entry, "fromStation", "code"), nestedStringField(entry, "toStation", "code")
 		if err := requireKeyComponents(operatorCode, tripCode, tripStageCode, tripDate, fromCode, toCode); err != nil {
-			return err
+			return tripCodes, err
 		}
 		if err := persistence.storeSearchCache(ctx, operatorCode, tripCode, tripStageCode, entry, index); err != nil {
-			return fmt.Errorf("store SEARCHBUSMAP Search cache: %w", err)
+			return tripCodes, fmt.Errorf("store SEARCHBUSMAP Search cache: %w", err)
 		}
 		if err := persistence.storeSearchMetadata(ctx, operatorCode, tripCode, tripStageCode, tripDate, fromCode, toCode, entry, index); err != nil {
-			return fmt.Errorf("store SEARCHBUSMAP metadata: %w", err)
+			return tripCodes, fmt.Errorf("store SEARCHBUSMAP metadata: %w", err)
 		}
 		if err := persistence.storeBusMapCache(ctx, operatorCode, tripCode, tripStageCode, entry, index); err != nil {
-			return fmt.Errorf("store SEARCHBUSMAP BusMap cache: %w", err)
+			return tripCodes, fmt.Errorf("store SEARCHBUSMAP BusMap cache: %w", err)
 		}
+		tripCodes = appendUpdatedTripCode(tripCodes, tripCode)
 	}
 	persistence.logger.Printf("TripDetails SEARCHBUSMAP persistence completed: entries=%d", len(entries))
-	return nil
+	return tripCodes, nil
 }

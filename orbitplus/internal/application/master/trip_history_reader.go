@@ -122,22 +122,24 @@ func NewTripHistoryService(reader TripHistoryQueueReader) *TripHistoryService {
 
 // TripHistoryEntry describes one queue_metrix record belonging to the trip or route.
 type TripHistoryEntry struct {
-	ReferenceID     string     `json:"referenceId"`
-	ActivityType    string     `json:"activityType"`
-	ActionType      string     `json:"actionType"`
-	ScheduleCode    string     `json:"scheduleCode"`
-	TripCode        string     `json:"tripCode"`
-	FromStation     string     `json:"fromStation"`
-	ToStation       string     `json:"toStation"`
-	TripDate        string     `json:"tripDate"`
-	Zone            string     `json:"zone"`
-	QueueStatus     string     `json:"queueStatus"`
-	FailureMessage  string     `json:"failureMessage"`
-	QueuedAt        *time.Time `json:"queuedAt"`
-	CompletedAt     *time.Time `json:"completedAt"`
-	DeadLetteredAt  *time.Time `json:"deadLetteredAt"`
-	UpdatedAt       *time.Time `json:"updatedAt"`
-	DurationSeconds *int64     `json:"durationSeconds"`
+	ReferenceID      string     `json:"referenceId"`
+	ActivityType     string     `json:"activityType"`
+	ActionType       string     `json:"actionType"`
+	ScheduleCode     string     `json:"scheduleCode"`
+	TripCode         string     `json:"tripCode"`
+	UpdatedTripCodes []string   `json:"updatedTripCodes"`
+	Message          string     `json:"message"`
+	FromStation      string     `json:"fromStation"`
+	ToStation        string     `json:"toStation"`
+	TripDate         string     `json:"tripDate"`
+	Zone             string     `json:"zone"`
+	QueueStatus      string     `json:"queueStatus"`
+	FailureMessage   string     `json:"failureMessage"`
+	QueuedAt         *time.Time `json:"queuedAt"`
+	CompletedAt      *time.Time `json:"completedAt"`
+	DeadLetteredAt   *time.Time `json:"deadLetteredAt"`
+	UpdatedAt        *time.Time `json:"updatedAt"`
+	DurationSeconds  *int64     `json:"durationSeconds"`
 }
 
 // TripHistoryActivitySummary counts matched records for one activity type.
@@ -259,10 +261,12 @@ func (service *TripHistoryService) Lookup(ctx context.Context, query TripHistory
 }
 
 func newTripHistoryEntry(record domain.QueueMetrix) TripHistoryEntry {
+	updatedTripCodes := append([]string(nil), record.UpdatedTripCodes...)
+	sort.Strings(updatedTripCodes)
 	entry := TripHistoryEntry{
 		ReferenceID: record.ReferenceID, ActivityType: record.ActivityType, ActionType: record.ActionType,
-		ScheduleCode: record.ScheduleCode, TripCode: record.TripCode, FromStation: record.SourceStationCode,
-		ToStation: record.DestinationStationCode, TripDate: record.TripDate, Zone: record.Zone,
+		ScheduleCode: record.ScheduleCode, TripCode: record.TripCode, UpdatedTripCodes: updatedTripCodes,
+		Message: string(record.WorkerPayload), FromStation: record.SourceStationCode, ToStation: record.DestinationStationCode, TripDate: record.TripDate, Zone: record.Zone,
 		QueueStatus: record.QueueStatus, FailureMessage: record.FailureMessage,
 		QueuedAt: optionalTripHistoryTime(record.QueuedAt), CompletedAt: optionalTripHistoryTime(record.CompletedAt),
 		DeadLetteredAt: optionalTripHistoryTime(record.DeadLetteredAt), UpdatedAt: optionalTripHistoryTime(record.UpdatedAt),

@@ -54,12 +54,12 @@ func (handler *OrionmaxInventoryChangeHandler) writeInventoryError(response http
 	switch {
 	case errors.Is(err, master.ErrInventoryActivityTypeMismatch):
 		writeJSONStatus(response, http.StatusBadRequest, 0, "activity_type URL parameter must match payload activity_type")
-	case errors.Is(err, master.ErrUnsupportedInventoryActivity):
-		writeJSONStatus(response, http.StatusBadRequest, 0, "Unsupported activity_type")
 	case errors.Is(err, master.ErrInvalidInventoryEvent):
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid inventory event")
 	case errors.Is(err, master.ErrTripCodeUnavailable):
 		writeJSONStatus(response, http.StatusConflict, 0, "Trip code is not available for this schedule")
+	case errors.Is(err, master.ErrZoneURLUnavailable):
+		writeJSONStatus(response, http.StatusUnprocessableEntity, 0, "Zone URL is not available for this zone")
 	default:
 		handler.logger.Printf("Orionmax inventory change processing failed: %v", err)
 		writeJSONStatus(response, http.StatusInternalServerError, 0, "Internal server error")

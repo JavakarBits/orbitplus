@@ -35,38 +35,46 @@ const (
 	searchBusMapAction = "SEARCHBUSMAP"
 )
 
-// Store stores valid Search and BUSMAP entries using their separate storage paths.
-func (persistence *TripDetailsStorage) Store(ctx context.Context, value any) error {
+type tripDetailsStoreResult struct {
+	UpdatedTripCodes []string
+}
+
+// Store stores valid Search and BUSMAP entries and reports each trip code whose
+// complete entry was persisted.
+func (persistence *TripDetailsStorage) Store(ctx context.Context, value any) (tripDetailsStoreResult, error) {
+	result := tripDetailsStoreResult{}
 	if persistence == nil || persistence.cache == nil || persistence.metadata == nil {
-		return errors.New("TripDetails persistence is not configured")
+		return result, errors.New("TripDetails persistence is not configured")
 	}
 
 	payload, suppliedActionType, operatorCode, envelope, err := resolveTripDetailsPayload(value)
 	if err != nil {
 		persistence.logger.Printf("TripDetails persistence extraction failed: %v", err)
-		return err
+		return result, err
 	}
 
 	actionType := strings.ToUpper(suppliedActionType)
 	if actionType == searchBusMapAction {
-		return persistence.storeSearchBusMapEntries(ctx, payload, envelope, operatorCode, suppliedActionType)
+		result.UpdatedTripCodes, err = persistence.storeSearchBusMapEntries(ctx, payload, envelope, operatorCode, suppliedActionType)
+		return result, err
 	}
 
 	entries, actionType, inferredBusMap, err := extractEntries(payload, envelope, actionType)
 	if err != nil {
 		persistence.logger.Printf("TripDetails persistence extraction failed: envelope=%s actionType=%q reason=missing_data_entries", envelope, suppliedActionType)
-		return err
+		return result, err
 	}
 	if inferredBusMap {
 		persistence.logger.Printf("TripDetails persistence inferred normalizedActionType=%q from direct single-entry response", actionType)
 	}
 
 	persistence.logger.Printf("TripDetails persistence started: envelope=%s actionType=%q normalizedActionType=%q entries=%d", envelope, suppliedActionType, actionType, len(entries))
-	if err := persistence.storeEntries(ctx, entries, actionType, operatorCode, suppliedActionType); err != nil {
-		return err
+	result.UpdatedTripCodes, err = persistence.storeEntries(ctx, entries, actionType, operatorCode, suppliedActionType)
+	if err != nil {
+		return result, err
 	}
 	persistence.logger.Printf("TripDetails persistence completed: envelope=%s actionType=%q entries=%d", envelope, suppliedActionType, len(entries))
-	return nil
+	return result, nil
 }
 
 func extractEntries(payload map[string]any, envelope, actionType string) ([]any, string, bool, error) {
@@ -108,19 +116,34 @@ func isWorkerRootBusMap(envelope, actionType string, payload map[string]any) boo
 	return !hasData
 }
 
-func (persistence *TripDetailsStorage) storeEntries(ctx context.Context, entries []any, actionType, operatorCode, suppliedActionType string) error {
+func (persistence *TripDetailsStorage) storeEntries(ctx context.Context, entries []any, actionType, operatorCode, suppliedActionType string) ([]string, error) {
+	tripCodes := make([]string, 0, len(entries))
 	for index, rawEntry := range entries {
 		entry, ok := rawEntry.(map[string]any)
 		if !ok {
 			persistence.logger.Printf("TripDetails persistence extraction failed: entry=%d reason=non_object_entry", index)
-			return errMissingStorageIdentifiers
+			return tripCodes, errMissingStorageIdentifiers
 		}
 		if err := persistence.storeEntry(ctx, actionType, operatorCode, entry, index); err != nil {
 			persistence.logger.Printf("TripDetails persistence failed: entry=%d actionType=%q error=%v", index, suppliedActionType, err)
-			return err
+			return tripCodes, err
+		}
+		tripCodes = appendUpdatedTripCode(tripCodes, stringField(entry, "tripCode"))
+	}
+	return tripCodes, nil
+}
+
+func appendUpdatedTripCode(tripCodes []string, tripCode string) []string {
+	tripCode = strings.TrimSpace(tripCode)
+	if tripCode == "" {
+		return tripCodes
+	}
+	for _, existing := range tripCodes {
+		if existing == tripCode {
+			return tripCodes
 		}
 	}
-	return nil
+	return append(tripCodes, tripCode)
 }
 
 func (persistence *TripDetailsStorage) storeEntry(ctx context.Context, actionType, envelopeOperatorCode string, entry map[string]any, index int) error {

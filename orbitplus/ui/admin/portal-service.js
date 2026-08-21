@@ -10,8 +10,8 @@ async function readAPI(fetcher, endpoint, signal) {
 export class AdminPortalService {
   constructor({ fetcher = fetch } = {}) { this.fetcher = fetcher; }
   dashboard({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.dashboard, signal); }
-  tripHistory({ operatorCode, tripCode, signal } = {}) {
-    const query = new URLSearchParams({ operatorCode: operatorCode || "", tripCode: tripCode || "" });
+  tripHistory({ operatorCode, tripCode, tripDate, fromStation, toStation, signal } = {}) {
+    const query = new URLSearchParams({ operatorCode: operatorCode || "", tripCode: tripCode || "", tripDate: tripDate || "", fromStation: fromStation || "", toStation: toStation || "" });
     return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.tripHistory}?${query}`, signal);
   }
 }

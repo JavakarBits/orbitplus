@@ -122,6 +122,14 @@ svg{display:block;width:100%;overflow:visible}
 .trip-row-mid strong{color:#4b3fc4;font-size:.95rem}
 .trip-row-bot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
 .trip-facts,.trip-error{margin:0;color:var(--muted);font-size:.71rem}
+.trip-updated-trips{min-width:170px}
+.trip-updated-trips>div{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.trip-updated-trips small{color:var(--muted);font-size:.71rem;font-weight:600}
+.trip-updated-trip{display:inline-block!important;margin:0!important;padding:3px 7px;border:1px solid #d9d2ff;border-radius:999px;background:#f1efff;color:#4b3fc4;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.7rem!important;font-weight:700}
+.trip-message{width:100%}
+.trip-message summary{color:#4b3fc4;cursor:pointer;font-size:.75rem;font-weight:750}
+.trip-message pre{max-height:260px;margin:9px 0 0;padding:10px;overflow:auto;border:1px solid #dedeea;border-radius:7px;background:#191a25;color:#e7e8f5;font:700 .7rem/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.trip-message-empty{margin:0;color:var(--muted);font-size:.71rem}
 .trip-error{max-width:100%;overflow:hidden;color:var(--bad);font-weight:650;text-overflow:ellipsis}
 .trip-status{align-self:center}
 @media(max-width:980px){.trip-form{grid-template-columns:1fr}.trip-counts{grid-template-columns:repeat(3,minmax(0,1fr))}.trip-row-top{grid-template-columns:1fr 1fr}}

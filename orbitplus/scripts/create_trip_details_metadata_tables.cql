@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS queue_metrix (
     to_station text,
     travel_date text,
     zone text,
+    message text,
+    trip_codes set<text>,
     queue_status text,
     queued_at timestamp,
     completed_at timestamp,

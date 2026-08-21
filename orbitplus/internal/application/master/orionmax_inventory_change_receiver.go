@@ -49,13 +49,16 @@ func (service *OrionmaxInventoryEventService) ReceiveInventoryChange(ctx context
 		if metric.ReferenceID == "" {
 			return ErrInvalidInventoryEvent
 		}
-		if err := service.metrix.SaveReceived(ctx, metric); err != nil {
-			return fmt.Errorf("save queue metrix record: %w", err)
-		}
 		job, err := buildInventoryRefreshJob(ctx, actionType, item, service.schedules, metric)
 		if err != nil {
+			if saveErr := service.metrix.SaveReceived(ctx, metric); saveErr != nil {
+				return fmt.Errorf("save queue metrix record: %w", saveErr)
+			}
 			service.markDead(ctx, metric, err)
 			return err
+		}
+		if err := service.metrix.SaveReceived(ctx, job.Metric); err != nil {
+			return fmt.Errorf("save queue metrix record: %w", err)
 		}
 		if err := service.publisher.PublishInventoryEvent(ctx, job.Metric.ReferenceID, job.Payload); err != nil {
 			service.markDead(ctx, job.Metric, err)

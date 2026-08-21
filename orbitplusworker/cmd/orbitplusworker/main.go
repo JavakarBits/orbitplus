@@ -16,6 +16,7 @@ import (
 
 	"orbitplusworker/internal/application/worker"
 	"orbitplusworker/internal/infrastructure/bits"
+	"orbitplusworker/internal/infrastructure/orbit"
 	"orbitplusworker/internal/infrastructure/orbitplus"
 	"orbitplusworker/internal/infrastructure/rabbitmq"
 )
@@ -143,6 +144,19 @@ func main() {
 	}
 	log.Print("Bits client setup complete")
 
+	log.Print("beginning Orbit credential client setup")
+	orbitHTTP, err := newHTTPClient(config.Orbit.TLS, config.HTTPTimeout, worker.HTTPAuthConfig{})
+	if err != nil {
+		log.Printf("invalid Orbit TLS configuration: %v", err)
+		return
+	}
+	credentialClient, err := orbit.NewClient(config.Orbit.Endpoint, config.Orbit.NamespaceCode, config.Orbit.AccessToken, config.OrbitPlusResponseSize, orbitHTTP, config.AppEnvironment)
+	if err != nil {
+		log.Printf("invalid Orbit credential client configuration: %v", err)
+		return
+	}
+	log.Print("Orbit credential client setup complete")
+
 	log.Print("beginning OrbitPlus client setup")
 	orbitPlusHTTP, err := newHTTPClient(config.OrbitPlus.TLS, config.HTTPTimeout, config.OrbitPlus.Auth)
 	if err != nil {
@@ -156,7 +170,7 @@ func main() {
 	}
 	log.Print("OrbitPlus client setup complete")
 
-	refreshWorker, err := worker.NewTripDetailsRefreshWorker(config.Worker, config.Bits.BaseURL, consumer, bitsClient, orbitPlusClient)
+	refreshWorker, err := worker.NewTripDetailsRefreshWorker(config.Worker, consumer, bitsClient, credentialClient, orbitPlusClient)
 	if err != nil {
 		log.Printf("cannot construct TripDetailsRefreshWorker: %v", err)
 		return

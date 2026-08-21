@@ -127,12 +127,22 @@ type OrbitPlusConfig struct {
 	Auth     HTTPAuthConfig `json:"-"`
 }
 
+// OrbitConfig locates the OrbitService operator credential API. AccessToken is
+// Worker-level secret material and is never sourced from a RabbitMQ message.
+type OrbitConfig struct {
+	Endpoint      string        `json:"endpoint"`
+	NamespaceCode string        `json:"namespaceCode"`
+	TLS           TLSFileConfig `json:"tls"`
+	AccessToken   string        `json:"-"`
+}
+
 // RuntimeConfig is the validated composition input. Secret values are resolved
 // only at startup from environment variables or mounted files.
 type RuntimeConfig struct {
 	AppEnvironment        AppEnvironment  `json:"-"`
 	RabbitMQ              RabbitMQConfig  `json:"rabbitmq"`
 	Bits                  BitsConfig      `json:"bits"`
+	Orbit                 OrbitConfig     `json:"orbit"`
 	OrbitPlus             OrbitPlusConfig `json:"orbitPlus"`
 	Worker                WorkerConfig    `json:"worker"`
 	HealthAPI             HealthAPIConfig `json:"healthApi"`
@@ -186,6 +196,8 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 	setString("RABBITMQ_EXCHANGE", &config.RabbitMQ.Exchange)
 	setString("RABBITMQ_ROUTING_KEY", &config.RabbitMQ.RoutingKey)
 	setString("BITS_BASE_URL", &config.Bits.BaseURL)
+	setString("ORBIT_URL", &config.Orbit.Endpoint)
+	setString("ORBIT_NAMESPACE_CODE", &config.Orbit.NamespaceCode)
 	setString("ORBITPLUS_URL", &config.OrbitPlus.Endpoint)
 	setString("HEALTH_API_HOST", &config.HealthAPI.Host)
 	if err := setTCPPort(lookup, "HEALTH_API_PORT", &config.HealthAPI.Port); err != nil {
@@ -198,6 +210,9 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 		return err
 	}
 	if err := loadSecret(lookup, "ORBITPLUS_BEARER_TOKEN", "ORBITPLUS_BEARER_TOKEN_FILE", &config.OrbitPlus.Auth.BearerToken); err != nil {
+		return err
+	}
+	if err := loadSecret(lookup, "ORBIT_ACCESS_TOKEN", "ORBIT_ACCESS_TOKEN_FILE", &config.Orbit.AccessToken); err != nil {
 		return err
 	}
 	if err := setPositiveInt(lookup, "WORKER_CONCURRENCY", &config.Worker.WorkerConcurrency); err != nil {
@@ -291,11 +306,14 @@ func (config RuntimeConfig) Validate() error {
 	if (config.RabbitMQ.Username == "") != (config.RabbitMQ.Password == "") {
 		return fmt.Errorf("RabbitMQ username and password must be configured together")
 	}
-	if err := ValidateBitsURL(config.Bits.BaseURL, config.AppEnvironment); err != nil {
-		return err
-	}
 	if err := ValidateOrbitPlusURL(config.OrbitPlus.Endpoint, config.AppEnvironment); err != nil {
 		return err
+	}
+	if err := ValidateOrbitURL(config.Orbit.Endpoint, config.AppEnvironment); err != nil {
+		return err
+	}
+	if strings.TrimSpace(config.Orbit.NamespaceCode) == "" || strings.TrimSpace(config.Orbit.AccessToken) == "" {
+		return fmt.Errorf("ORBIT_NAMESPACE_CODE and ORBIT_ACCESS_TOKEN are required")
 	}
 	if config.HTTPTimeout <= 0 || config.OrbitPlusResponseSize <= 0 {
 		return fmt.Errorf("worker limits must be valid")
@@ -318,6 +336,11 @@ func ValidateBitsURL(raw string, environment AppEnvironment) error {
 // ValidateOrbitPlusURL permits https in every environment and http only in development.
 func ValidateOrbitPlusURL(raw string, environment AppEnvironment) error {
 	return validateEndpointURL(raw, environment, "OrbitPlus endpoint", "https", "http", false, false)
+}
+
+// ValidateOrbitURL permits https in every environment and http only in development.
+func ValidateOrbitURL(raw string, environment AppEnvironment) error {
+	return validateEndpointURL(raw, environment, "Orbit endpoint", "https", "http", true, true)
 }
 
 func validateEndpointURL(raw string, environment AppEnvironment, endpointName, secureScheme, insecureScheme string, requireHostname, rejectQueryAndFragment bool) error {

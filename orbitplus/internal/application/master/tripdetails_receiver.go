@@ -44,9 +44,12 @@ func (service *TripDetailsService) ReceiveTripDetails(rawBody []byte, value any)
 	service.logger.Print("TripDetails request received")
 	service.logger.Printf("TripDetails payload: %s", rawBody)
 	referenceID := tripDetailsReferenceID(value)
+	storeResult := tripDetailsStoreResult{}
 	if service.persistence != nil {
-		if err := service.persistence.Store(context.Background(), value); err != nil {
-			service.markDead(referenceID, err)
+		var err error
+		storeResult, err = service.persistence.Store(context.Background(), value)
+		if err != nil {
+			service.markDead(referenceID, storeResult.UpdatedTripCodes, err)
 			return err
 		}
 	}
@@ -54,7 +57,7 @@ func (service *TripDetailsService) ReceiveTripDetails(rawBody []byte, value any)
 		now := time.Now().UTC()
 		if err := service.metrix.MarkCompleted(context.Background(), domain.QueueMetrix{
 			ReferenceID: referenceID, QueueStatus: domain.QueueStatusCompleted,
-			CompletedAt: now, UpdatedAt: now,
+			UpdatedTripCodes: storeResult.UpdatedTripCodes, CompletedAt: now, UpdatedAt: now,
 		}); err != nil {
 			return err
 		}
@@ -79,14 +82,14 @@ func (service *TripDetailsService) MarkTripDetailsDead(ctx context.Context, refe
 	return nil
 }
 
-func (service *TripDetailsService) markDead(referenceID string, cause error) {
+func (service *TripDetailsService) markDead(referenceID string, updatedTripCodes []string, cause error) {
 	if referenceID == "" || service.metrix == nil {
 		return
 	}
 	now := time.Now().UTC()
 	if err := service.metrix.MarkDead(context.Background(), domain.QueueMetrix{
 		ReferenceID: referenceID, QueueStatus: domain.QueueStatusDead, DeadLetteredAt: now,
-		FailureMessage: queueMetrixFailureReason(cause), UpdatedAt: now,
+		UpdatedTripCodes: updatedTripCodes, FailureMessage: queueMetrixFailureReason(cause), UpdatedAt: now,
 	}); err != nil {
 		service.logger.Printf("queue metrix dead-state update failed: reference_id=%q error=%v", referenceID, err)
 	}

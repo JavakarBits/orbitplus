@@ -38,10 +38,11 @@
         "header": [{ "key": "Content-Type", "value": "application/json" }],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"action_type\": \"SEARCH_Q3\",\n  \"activity_type\": \"daily-job\",\n  \"data\": [\n    {\n      \"refid\": \"ed1a859fee57\",\n      \"doj\": \"2026-09-04 00:00:00\",\n      \"source\": \"STF2CD129\",\n      \"destination\": \"ST1984513H\",\n      \"operatorcode\": \"aonetrans\",\n      \"type\": \"SEARCH\",\n      \"schedulecode\": \"NA\"\n    }\n  ],\n  \"zone\": \"r3bits\"\n}",
+          "raw": "{\n  \"action_type\": \"SEARCH_Q3\",\n  \"activity_type\": \"daily-job\",\n  \"data\": [\n    {\n      \"refid\": \"ed1a859fee57\",\n      \"doj\": \"2026-09-04 00:00:00\",\n      \"source\": \"STF2CD129\",\n      \"destination\": \"ST1984513H\",\n      \"operatorcode\": \"aonetrans\",\n      \"type\": \"SEARCH\",\n      \"schedulecode\": \"NA\",\n      \"tripcode\": \"2N38731S260904D\"\n    }\n  ],\n  \"zone\": \"r3bits\"\n}",
           "options": { "raw": { "language": "json" } }
         },
-        "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=daily-job"
+        "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=daily-job",
+        "description": "Each published Worker job includes zoneURL derived from the inbound zone. Example: r3bits resolves to http://app.r3.ezeebits.com. All supplied and unrecognized activity types are queued as searchbusmap. data[].tripcode is optional; when supplied it is published as Worker tripCode, otherwise a non-NA schedulecode may resolve it from schedule metadata. Namespace credentials are never included in the message."
       }
     },
     { "name": "GET Health", "request": { "method": "GET", "url": "http://localhost:8082/health" } },
@@ -49,7 +50,7 @@
       "name": "GET Trip Analyzer History (protected UI session)",
       "request": {
         "method": "GET",
-        "description": "Queue lifecycle history from queue_metrix. Requires operatorCode plus a tripCode or at least one of tripDate, fromStation, toStation. Trip code only matches busmap-family records, so add the route selectors to include search-family activities. Requires an authenticated protected UI session.",
+        "description": "Queue lifecycle history from queue_metrix. Requires operatorCode plus a tripCode or at least one of tripDate, fromStation, toStation. For new Orionmax entries, tripCode is optional and all activities use searchbusmap, so include route selectors to return rows without a trip code. Requires an authenticated protected UI session.",
         "url": "http://localhost:8082/orbitplus/api/admin/trip-history?operatorCode=bits&tripCode=2N38731S260820D&tripDate=2026-08-20&fromStation=STF17D52&toStation=STF17D51"
       }
     },
@@ -57,15 +58,106 @@
       "name": "GET Search (persisted)",
       "request": {
         "method": "GET",
-        "url": "http://localhost:8082/busservices/api/3.0/json/bits/demo-user/demo-token/search/STF17D52/STF1GI77/2026-08-20"
+        "url": "http://localhost:8082/orbitplus/api/3.0/json/bits/demo-user/demo-token/search/STF17D52/STF1GI77/2026-08-20"
       }
     },
     {
       "name": "GET Busmap (persisted)",
       "request": {
         "method": "GET",
-        "url": "http://localhost:8082/busservices/api/3.0/json/bits/demo-user/demo-token/busmap/2N38731S260820D/STF17D52/STF1GI77/2026-08-20"
+        "url": "http://localhost:8082/orbitplus/api/3.0/json/bits/demo-user/demo-token/busmap/2N38731S260820D/STF17D52/STF1GI77/2026-08-20"
       }
+    },
+    {
+      "name": "POST UI Login (required before protected APIs)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [{ "key": "access_token", "value": "{{orbitplus_ui_access_token}}", "type": "text" }]
+        },
+        "url": "http://localhost:8082/orbitplus/login",
+        "description": "Set the orbitplus_ui_access_token Postman variable to ORBITPLUS_UI_ACCESS_TOKEN. Postman then retains the signed session cookie for protected API requests."
+      }
+    },
+    {
+      "name": "POST UI Logout",
+      "request": { "method": "POST", "url": "http://localhost:8082/orbitplus/logout" }
+    },
+    {
+      "name": "GET Queue Jobs Report (protected)",
+      "request": { "method": "GET", "url": "http://localhost:8082/orbitplus/api/reports/queue-jobs" }
+    },
+    {
+      "name": "GET Queue Dashboard Summary (protected)",
+      "request": { "method": "GET", "url": "http://localhost:8082/orbitplus/api/dashboard/queue-summary" }
+    },
+    {
+      "name": "GET System Health (protected)",
+      "request": { "method": "GET", "url": "http://localhost:8082/orbitplus/api/dashboard/system-health" }
+    },
+    {
+      "name": "GET Admin Dashboard (protected)",
+      "request": { "method": "GET", "url": "http://localhost:8082/orbitplus/api/admin/dashboard" }
+    },
+    {
+      "name": "GET Cache Keys (protected)",
+      "request": {
+        "method": "GET",
+        "url": "http://localhost:8082/orbitplus/api/cache?cursor=0&limit=100&category=all",
+        "description": "Lists cache keys only. It does not return values. category may be all, trip, stage, busmap, or other."
+      }
+    },
+    {
+      "name": "GET Cache Value (protected)",
+      "request": {
+        "method": "GET",
+        "url": "http://localhost:8082/orbitplus/api/cache/value?key=trip%3Abits%3A2N38731S260820D",
+        "description": "Replace the key query parameter with a key returned by GET Cache Keys."
+      }
+    },
+    {
+      "name": "GET RabbitMQ Snapshot (protected)",
+      "request": { "method": "GET", "url": "http://localhost:8082/orbitplus/api/rabbitmq" }
+    },
+    {
+      "name": "GET Route Metadata (protected)",
+      "request": {
+        "method": "GET",
+        "url": "http://localhost:8082/orbitplus/api/tables/route-metadata?operator=bits&travel=2026-08-20&from=STF17D52&to=STF1GI77"
+      }
+    },
+    {
+      "name": "GET Schedule Metadata (protected)",
+      "request": {
+        "method": "GET",
+        "url": "http://localhost:8082/orbitplus/api/tables/schedule-metadata?operator=bits&schedule=SCH4A8734G&travel=2026-08-20"
+      }
+    },
+    {
+      "name": "POST Orionmax Inventory Events — All Activities",
+      "description": "Each known activity has its own request. All are queued by Master as searchbusmap. tripcode is optional; add it to data[0] only when Orionmax provides it. Replace the sample reference IDs before sending requests to a shared environment.",
+      "item": [
+        { "name": "POST daily-job", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"daily-job\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=daily-job" } },
+        { "name": "POST ticket-tentative-block-cancel", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"ticket-tentative-block-cancel\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=ticket-tentative-block-cancel" } },
+        { "name": "POST block-release", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"block-release\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=block-release" } },
+        { "name": "POST quick-fare-change", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"quick-fare-change\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=quick-fare-change" } },
+        { "name": "POST dp-fare-change", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"dp-fare-change\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=dp-fare-change" } },
+        { "name": "POST seat-block-release", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"seat-block-release\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=seat-block-release" } },
+        { "name": "POST ticket-cancel", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"ticket-cancel\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=ticket-cancel" } },
+        { "name": "POST manual-refresh", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"manual-refresh\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=manual-refresh" } },
+        { "name": "POST notify-schedule", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"notify-schedule\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=notify-schedule" } },
+        { "name": "POST fare-change", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"fare-change\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=fare-change" } },
+        { "name": "POST phone-ticket-cancel", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"phone-ticket-cancel\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=phone-ticket-cancel" } },
+        { "name": "POST not-travel", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"not-travel\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=not-travel" } },
+        { "name": "POST service_inactive", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"service_inactive\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=service_inactive" } },
+        { "name": "POST vsd_toggle", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"vsd_toggle\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=vsd_toggle" } },
+        { "name": "POST no_show", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"no_show\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=no_show" } },
+        { "name": "POST shift", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"shift\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=shift" } },
+        { "name": "POST push_trip_info", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"push_trip_info\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type=push_trip_info" } },
+        { "name": "POST unmapped activity (template)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"activity_type\":\"{{unmapped_activity_type}}\",\"data\":[{\"refid\":\"{{refid}}\",\"doj\":\"2026-09-04 00:00:00\",\"source\":\"STF2CD129\",\"destination\":\"ST1984513H\",\"operatorcode\":\"aonetrans\",\"schedulecode\":\"NA\",\"tripcode\":\"2N38731S260904D\"}],\"zone\":\"r3bits\"}", "options": { "raw": { "language": "json" } } }, "url": "http://localhost:8082/api/orionmax/inventory/events?activity_type={{unmapped_activity_type}}", "description": "Set unmapped_activity_type to any non-empty Orionmax activity value. Master queues it as searchbusmap." } }
+      ]
     }
   ]
 }

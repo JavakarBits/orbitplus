@@ -297,10 +297,14 @@ function tripEntryCard(entry) {
   const tone = entry.queueStatus === "DEAD" ? "bad" : entry.queueStatus === "COMPLETED" ? "" : "warn";
   const finished = entry.completedAt ? ["Queue completed at", stamp(entry.completedAt)] : entry.deadLetteredAt ? ["Dead lettered at", stamp(entry.deadLetteredAt)] : ["Not completed", `Last update ${stamp(entry.updatedAt)}`];
   const facts = [entry.actionType, entry.tripCode || "no trip code", entry.tripDate, entry.fromStation && entry.toStation ? `${entry.fromStation} → ${entry.toStation}` : "", entry.scheduleCode].filter(Boolean).map((value) => esc(value)).join(" · ");
+  const updatedTripCodes = [...new Set((Array.isArray(entry.updatedTripCodes) ? entry.updatedTripCodes : []).filter(Boolean))];
+  const updatedTrips = updatedTripCodes.length ? updatedTripCodes.map((tripCode) => `<b class="trip-updated-trip">${esc(tripCode)}</b>`).join("") : "<small>No completed trip codes captured</small>";
+  const message = entry.message ? `<details class="trip-message"><summary>View queued message</summary><pre>${esc(entry.message)}</pre></details>` : `<p class="trip-message-empty">Queued message was not captured for this historical record.</p>`;
   return `<article class="trip-card">
     <div class="trip-row trip-row-top"><div><span>Reference ID</span><strong>${esc(entry.referenceId)}</strong></div><div><span>Activity type</span><strong>${esc(entry.activityType)}</strong></div><div><span>Queued at</span><strong>${esc(stamp(entry.queuedAt))}</strong></div><div class="trip-status">${chip(entry.queueStatus, tone)}</div></div>
-    <div class="trip-row trip-row-mid"><div><span>Total time taken</span><strong>${esc(spanOf(entry.durationSeconds))}</strong></div>${facts ? `<p class="trip-facts">${facts}</p>` : ""}</div>
+    <div class="trip-row trip-row-mid"><div><span>Total time taken</span><strong>${esc(spanOf(entry.durationSeconds))}</strong></div><div class="trip-updated-trips"><span>Updated trips</span><div>${updatedTrips}</div></div>${facts ? `<p class="trip-facts">${facts}</p>` : ""}</div>
     <div class="trip-row trip-row-bot"><div><span>${esc(finished[0])}</span><strong>${esc(finished[1])}</strong></div>${entry.failureMessage ? `<p class="trip-error" title="${esc(entry.failureMessage)}">⚠ ${esc(entry.failureMessage)}</p>` : ""}</div>
+    <div class="trip-row trip-row-message">${message}</div>
   </article>`;
 }
 

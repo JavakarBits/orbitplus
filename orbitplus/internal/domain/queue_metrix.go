@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	QueueStatusReceived  = "RECEIVED"
@@ -22,6 +25,8 @@ type QueueMetrix struct {
 	DestinationStationCode string
 	TripDate               string
 	Zone                   string
+	WorkerPayload          json.RawMessage
+	UpdatedTripCodes       []string
 	QueueStatus            string
 	QueuedAt               time.Time
 	CompletedAt            time.Time

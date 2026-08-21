@@ -6,35 +6,37 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"orbitplusworker/internal/domain"
 )
 
-const temporaryBitsUsername = "ram"
-const temporaryBitsAPIToken = "85827049535E9525097UJ16"
-
 // TripDetailsRefreshWorker has no correctness, coordination, or recovery state.
 // Every delivery follows the same direct path, and OrbitPlus is authoritative for
 // successful, duplicate, and stale-result outcomes.
 type TripDetailsRefreshWorker struct {
-	config          WorkerConfig
-	bitsBaseURL     string
-	consumer        RabbitMQConsumer
-	source          TripDetailsClient
-	orbitPlusClient OrbitPlusClient
+	config           WorkerConfig
+	consumer         RabbitMQConsumer
+	source           TripDetailsClient
+	credentialClient OperatorCredentialClient
+	orbitPlusClient  OrbitPlusClient
 }
 
-func NewTripDetailsRefreshWorker(config WorkerConfig, bitsBaseURL string, consumer RabbitMQConsumer, source TripDetailsClient, orbitPlusClient OrbitPlusClient) (*TripDetailsRefreshWorker, error) {
+func NewTripDetailsRefreshWorker(config WorkerConfig, consumer RabbitMQConsumer, source TripDetailsClient, credentialClient OperatorCredentialClient, orbitPlusClient OrbitPlusClient) (*TripDetailsRefreshWorker, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(bitsBaseURL) == "" || consumer == nil || source == nil || orbitPlusClient == nil {
-		return nil, fmt.Errorf("%w: Bits base URL and all injected dependencies are required", ErrInvalidConfig)
+	if consumer == nil || source == nil || credentialClient == nil || orbitPlusClient == nil {
+		return nil, fmt.Errorf("%w: all injected dependencies are required", ErrInvalidConfig)
 	}
-	return &TripDetailsRefreshWorker{config: config, bitsBaseURL: bitsBaseURL, consumer: consumer, source: source, orbitPlusClient: orbitPlusClient}, nil
+	return &TripDetailsRefreshWorker{
+		config:           config,
+		consumer:         consumer,
+		source:           source,
+		credentialClient: credentialClient,
+		orbitPlusClient:  orbitPlusClient,
+	}, nil
 }
 
 // Handle processes one delivery. A valid message is processed once. Any terminal
@@ -65,9 +67,9 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	message = parsedMessage
 	slog.Info("TripDetails refresh started", "actionType", message.ActionType, "operator", message.OperatorCode)
 
-	credential, err := worker.temporaryCredential(message)
+	credential, err := worker.resolveCredential(ctx, message)
 	if err != nil {
-		return worker.reportFailure(ctx, delivery, message, ExecutionCredentialError, "Bits credential construction failed.")
+		return worker.reportFailure(ctx, delivery, message, ExecutionCredentialError, "Orbit operator credential could not be resolved.")
 	}
 	sourceResult, err := worker.fetchTripDetails(ctx, message, credential)
 	if err != nil {
@@ -126,13 +128,22 @@ func parseTripDetailsRefreshMessage(delivery RabbitMQDelivery) (domain.TripDetai
 	return message, nil
 }
 
-func (worker *TripDetailsRefreshWorker) temporaryCredential(message domain.TripDetailsRefreshMessage) (BitsOperatorCredential, error) {
-	// TODO: Replace this temporary hardcoding once the credential API exists.
+// resolveCredential fetches the operator's Bits credential from OrbitService.
+// Credential values, credential-bearing URLs, and secrets are never logged.
+func (worker *TripDetailsRefreshWorker) resolveCredential(ctx context.Context, message domain.TripDetailsRefreshMessage) (BitsOperatorCredential, error) {
+	slog.Info("Orbit operator credential request started", "actionType", message.ActionType, "operator", message.OperatorCode)
+	operatorCredential, err := worker.credentialClient.FetchOperatorCredential(ctx, OperatorCredentialRequest{OperatorCode: message.OperatorCode})
+	if err != nil {
+		slog.Info("Orbit operator credential request completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
+		return BitsOperatorCredential{}, err
+	}
+	slog.Info("Orbit operator credential request completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", true)
+
 	credential := BitsOperatorCredential{
 		OperatorCode: message.OperatorCode,
-		Username:     temporaryBitsUsername,
-		APIToken:     temporaryBitsAPIToken,
-		BaseURL:      worker.bitsBaseURL,
+		Username:     operatorCredential.Username,
+		APIToken:     operatorCredential.APIToken,
+		BaseURL:      message.ZoneURL,
 	}
 	if err := credential.Validate(message.OperatorCode); err != nil {
 		return BitsOperatorCredential{}, err

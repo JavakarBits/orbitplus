@@ -12,6 +12,7 @@ type TripDetailsRefreshMessage struct {
 	ActionType      string `json:"actionType"`
 	ReferenceID     string `json:"referenceId"`
 	OperatorCode    string `json:"operatorCode"`
+	ZoneURL         string `json:"zoneURL"`
 	FromCode        string `json:"fromCode"`
 	ToCode          string `json:"toCode"`
 	TripDate        string `json:"tripDate"`
@@ -33,6 +34,9 @@ func (message TripDetailsRefreshMessage) Validate() error {
 	}
 	if strings.TrimSpace(message.OperatorCode) == "" {
 		return fmt.Errorf("missing operatorCode")
+	}
+	if strings.TrimSpace(message.ZoneURL) == "" {
+		return fmt.Errorf("missing zoneURL")
 	}
 
 	switch message.ActionType {

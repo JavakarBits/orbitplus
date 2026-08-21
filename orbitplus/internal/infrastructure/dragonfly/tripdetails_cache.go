@@ -21,6 +21,8 @@ type TripDetailsCacheRepository struct {
 	client *redis.Client
 }
 
+const tripDetailsCacheTTL = 90 * 24 * time.Hour
+
 func NewTripDetailsCacheRepository(ctx context.Context, config Config) (*TripDetailsCacheRepository, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr: config.Address, Password: config.Password, DB: config.Database, DialTimeout: config.DialTimeout,
@@ -32,9 +34,9 @@ func NewTripDetailsCacheRepository(ctx context.Context, config Config) (*TripDet
 	return &TripDetailsCacheRepository{client: client}, nil
 }
 
-// SetJSON stores one JSON document without an expiry policy.
+// SetJSON stores one JSON document for the configured 90-day cache retention window.
 func (repository *TripDetailsCacheRepository) SetJSON(ctx context.Context, key string, value []byte) error {
-	if err := repository.client.Set(ctx, key, value, 0).Err(); err != nil {
+	if err := repository.client.Set(ctx, key, value, tripDetailsCacheTTL).Err(); err != nil {
 		return fmt.Errorf("set Dragonfly key %q: %w", key, err)
 	}
 	return nil
