@@ -44,6 +44,8 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 		handler.serveLive(response, request, master.BitsLookup{
 			Action:       master.BitsActionSearch,
 			OperatorCode: lookup.OperatorCode,
+			Username:     request.PathValue("username"),
+			APIToken:     request.PathValue("apiToken"),
 			FromCode:     lookup.FromCode,
 			ToCode:       lookup.ToCode,
 			TravelDate:   lookup.TravelDate,
@@ -81,6 +83,8 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 		handler.serveLive(response, request, master.BitsLookup{
 			Action:       master.BitsActionBusMap,
 			OperatorCode: lookup.OperatorCode,
+			Username:     request.PathValue("username"),
+			APIToken:     request.PathValue("apiToken"),
 			TripCode:     lookup.TripCode,
 			FromCode:     lookup.FromCode,
 			ToCode:       lookup.ToCode,
@@ -118,6 +122,13 @@ func (handler *TripDetailsReadHandler) serveLive(response http.ResponseWriter, r
 	switch {
 	case errors.Is(err, master.ErrVerificationBusy):
 		writeJSONStatus(response, http.StatusTooManyRequests, 0, "Live verification busy")
+	case errors.Is(err, master.ErrLiveSourceRejected):
+		// Bits is healthy and answered; it just has nothing for this lookup,
+		// whether because the date has passed or the operator does not serve the
+		// route. That is the same answer the cached path gives when it finds
+		// nothing, so it gets the same status rather than a gateway error the
+		// caller would retry. The specific code is logged, never returned.
+		writeJSONStatus(response, http.StatusNotFound, 0, "Trip details not found")
 	case err != nil:
 		// The specific reason is logged, never returned, so no upstream status
 		// code or body can reach the caller.
