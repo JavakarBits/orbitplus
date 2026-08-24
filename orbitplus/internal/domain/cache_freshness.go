@@ -28,6 +28,11 @@ const (
 	OutcomeCacheMissing VerificationOutcome = "CACHE_MISSING"
 	// OutcomeSourceUnavailable means one side could not be obtained.
 	OutcomeSourceUnavailable VerificationOutcome = "SOURCE_UNAVAILABLE"
+	// OutcomeSourceRejected means Bits answered but refused the lookup, so no
+	// comparison was possible. No row is stored: nothing was learned about cache
+	// freshness, and storing it would fill a drift table with rows that are not
+	// drift. The outcome exists so the log can still name what happened.
+	OutcomeSourceRejected VerificationOutcome = "SOURCE_REJECTED"
 )
 
 // EntryIdentity pairs a cached entry with a Bits entry. Two entries describe
