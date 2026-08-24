@@ -15,7 +15,7 @@ const (
 // QueueMetrix tracks one Orionmax inventory item through queue publication and
 // the corresponding Worker result.
 type QueueMetrix struct {
-	ReferenceID            string
+	QueueID                string
 	ActivityType           string
 	ActionType             string
 	OperatorCode           string

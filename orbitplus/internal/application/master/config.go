@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // AppEnvironment identifies the deployment environment the process runs in.
@@ -16,12 +17,19 @@ const (
 
 // RuntimeConfig is the service runtime configuration.
 type RuntimeConfig struct {
-	AppEnvironment     AppEnvironment
-	APIPort            int
-	UIAccessToken      string
-	Storage            *StorageConfig
-	Queue              *QueueConfig
-	RabbitMQManagement *RabbitMQManagementConfig
+	AppEnvironment          AppEnvironment
+	APIPort                 int
+	UIAccessToken           string
+	Storage                 *StorageConfig
+	Queue                   *QueueConfig
+	PeriodicRefreshInterval time.Duration
+	// Verification is nil when live Bits verification is disabled.
+	Verification *VerificationConfig
+	// VerificationError records why live verification is unavailable. It is
+	// deliberately not returned from LoadRuntimeConfig: a broken verification
+	// group must not stop the service from serving cached reads, unlike every
+	// other configuration group, which is load-bearing.
+	VerificationError error
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment variables are set.
@@ -59,6 +67,12 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	config.RabbitMQManagement = rabbitMQManagement
+	verification, err := loadVerificationConfig(config.AppEnvironment, config.Storage)
+	if err != nil {
+		config.VerificationError = err
+	} else {
+		config.Verification = verification
+	}
 	return config, nil
 }
 
