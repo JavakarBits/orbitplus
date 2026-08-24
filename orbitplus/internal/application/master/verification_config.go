@@ -14,17 +14,6 @@ import (
 // concurrency limit.
 const maxBitsHTTPTimeout = 30 * time.Second
 
-// Bits credentials are compiled in, matching orbitplusworker's
-// temporaryBitsUsername and temporaryBitsAPIToken, so the two modules
-// authenticate to Bits as the same principal and only the endpoint has to be
-// supplied at run time.
-//
-// TODO: Replace this temporary hardcoding once the credential API exists. Both
-// modules must change together, or master and the Worker will disagree about
-// who they are to Bits.
-const temporaryBitsUsername = "ram"
-const temporaryBitsAPIToken = "85827049535E9525097UJ16"
-
 // Defaults for the optional tuning variables, so BITS_BASE_URL on its own is
 // enough to enable the feature.
 const (
@@ -34,14 +23,11 @@ const (
 
 // VerificationConfig holds the settings enabling live Bits verification.
 //
-// Credentials live here and in the Bits adapter only. They are never written to
-// a log line, an error, a response body, or a persisted row. They are filled
-// from the compiled-in constants rather than the environment, so the adapter
-// keeps taking them as fields and stays unaware of where they came from.
+// It deliberately carries no credentials. Those arrive per request on the read
+// route and travel on the BitsLookup, so there is no process-wide identity to
+// leak through configuration, and nothing here has to be treated as a secret.
 type VerificationConfig struct {
 	BitsBaseURL   string
-	BitsUsername  string
-	BitsAPIToken  string
 	HTTPTimeout   time.Duration
 	MaxConcurrent int
 }
@@ -50,8 +36,8 @@ type VerificationConfig struct {
 //
 // BITS_BASE_URL alone is the switch: unset means the feature is disabled, which
 // is the default because the read routes it hangs off are unauthenticated.
-// Credentials are not read from the environment at all, they come from the
-// compiled-in constants, so an operator only has to supply the endpoint.
+// Credentials are not configured at all, they come from each request, so an
+// operator only has to supply the endpoint.
 //
 // BITS_HTTP_TIMEOUT and LIVE_VERIFICATION_MAX_CONCURRENT are optional tuning.
 // Unset means the default; set but unparseable is an error rather than a silent
@@ -92,8 +78,6 @@ func loadVerificationConfig(environment AppEnvironment, storage *StorageConfig) 
 
 	return &VerificationConfig{
 		BitsBaseURL:   baseURL,
-		BitsUsername:  temporaryBitsUsername,
-		BitsAPIToken:  temporaryBitsAPIToken,
 		HTTPTimeout:   timeout,
 		MaxConcurrent: maxConcurrent,
 	}, nil

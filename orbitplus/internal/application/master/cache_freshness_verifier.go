@@ -107,6 +107,9 @@ func (verifier *CacheFreshnessVerifier) Verify(ctx context.Context, lookup BitsL
 
 	if fetchErr != nil {
 		outcome = domain.OutcomeSourceUnavailable
+		if errors.Is(fetchErr, ErrLiveSourceRejected) {
+			outcome = domain.OutcomeSourceRejected
+		}
 	} else {
 		outcome, differences, total = verifier.compareAgainstCache(ctx, lookup, result)
 	}
@@ -117,7 +120,9 @@ func (verifier *CacheFreshnessVerifier) Verify(ctx context.Context, lookup BitsL
 	if outcome == domain.OutcomeDifferent || outcome == domain.OutcomeCacheMissing {
 		repaired = verifier.repairCache(ctx, lookup, result)
 	}
-	if outcome != domain.OutcomeMatch {
+	// A match learned that nothing is stale and a rejection learned nothing at
+	// all, so neither earns a row.
+	if outcome != domain.OutcomeMatch && outcome != domain.OutcomeSourceRejected {
 		verifier.record(lookup, outcome, differences, total, repaired)
 	}
 	verifier.logger.Printf("live verification completed: remote_addr=%q action=%s operator=%q outcome=%s differences=%d repaired=%t",
