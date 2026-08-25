@@ -192,7 +192,10 @@ func (verifier *CacheFreshnessVerifier) repairCache(ctx context.Context, lookup 
 	}
 	envelope["orbitResponse"] = orbitResponse
 
-	if err := verifier.repairer.Store(ctx, envelope); err != nil {
+	// Store now reports which trip codes it touched alongside the error. The
+	// repair only needs to know whether the write landed, so the result is
+	// discarded rather than threaded into the difference row.
+	if _, err := verifier.repairer.Store(ctx, envelope); err != nil {
 		verifier.logger.Printf("cache repair failed: action=%s operator=%q error=%v",
 			lookup.Action, lookup.OperatorCode, err)
 		return false
@@ -210,7 +213,7 @@ func (verifier *CacheFreshnessVerifier) cachedEntries(ctx context.Context, looku
 		TripCode:     lookup.TripCode,
 		FromCode:     lookup.FromCode,
 		ToCode:       lookup.ToCode,
-		TravelDate:   lookup.TravelDate,
+		TripDate:     lookup.TravelDate,
 	}
 	if lookup.Action == BitsActionBusMap {
 		entry, err := verifier.reader.BusMap(ctx, routeLookup)

@@ -48,7 +48,7 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 			APIToken:     request.PathValue("apiToken"),
 			FromCode:     lookup.FromCode,
 			ToCode:       lookup.ToCode,
-			TravelDate:   lookup.TravelDate,
+			TravelDate:   lookup.TripDate,
 		})
 		return
 	}
@@ -88,7 +88,7 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 			TripCode:     lookup.TripCode,
 			FromCode:     lookup.FromCode,
 			ToCode:       lookup.ToCode,
-			TravelDate:   lookup.TravelDate,
+			TravelDate:   lookup.TripDate,
 		})
 		return
 	}
