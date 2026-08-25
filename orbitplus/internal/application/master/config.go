@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"time"
 )
 
 // AppEnvironment identifies the deployment environment the process runs in.

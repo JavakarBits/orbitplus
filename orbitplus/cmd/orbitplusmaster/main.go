@@ -15,9 +15,10 @@ import (
 	"orbitplusmaster/internal/infrastructure/rabbitmq"
 )
 
-// masterServices groups what startup builds, so adding a dependency does not
-// change the arity of a shared return signature. The previous positional form
-// had drifted out of step with its own return statements.
+// masterServices groups what startup builds. A struct rather than a positional
+// return, because the previous signature declared seven results while its own
+// return statements supplied eight, and nothing caught it until the package
+// failed to compile.
 type masterServices struct {
 	tripDetails *master.TripDetailsService
 	read        *master.TripDetailsReadService
