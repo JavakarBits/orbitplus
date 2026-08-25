@@ -53,7 +53,7 @@ func NewTripDetailsMetadataRepository(ctx context.Context, config Config) (*Trip
 // SaveRouteMetadata upserts one route-to-trip/stage lookup row.
 func (repository *TripDetailsMetadataRepository) SaveRouteMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error {
 	routeQuery := `INSERT INTO ` + metadataRouteTable + `
-		(operator_code, travel_date, from_station_code, to_station_code, trip_code, trip_stage_code, updated_at)
+		(operator_code, trip_date, from_station_code, to_station_code, trip_code, trip_stage_code, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`
 	if err := repository.session.Query(routeQuery, metadata.OperatorCode, metadata.TripDate, metadata.FromStationCode,
 		metadata.ToStationCode, metadata.TripCode, metadata.TripStageCode, metadata.UpdatedAt).WithContext(ctx).Exec(); err != nil {
@@ -64,7 +64,7 @@ func (repository *TripDetailsMetadataRepository) SaveRouteMetadata(ctx context.C
 
 // ListStaleRouteMetadata scans route metadata and returns routes whose latest update predates cutoff.
 func (repository *TripDetailsMetadataRepository) ListStaleRouteMetadata(ctx context.Context, cutoff time.Time) ([]domain.TripDetailsStageMetadata, error) {
-	query := `SELECT operator_code, travel_date, from_station_code, to_station_code, updated_at FROM ` + metadataRouteTable
+	query := `SELECT operator_code, trip_date, from_station_code, to_station_code, updated_at FROM ` + metadataRouteTable
 	iter := repository.session.Query(query).WithContext(ctx).Iter()
 	latest := make(map[routeMetadataKey]domain.TripDetailsStageMetadata)
 	for {
@@ -99,7 +99,7 @@ type routeMetadataKey struct {
 // SaveScheduleMetadata upserts one schedule-to-trip/stage lookup row.
 func (repository *TripDetailsMetadataRepository) SaveScheduleMetadata(ctx context.Context, metadata domain.TripDetailsStageMetadata) error {
 	scheduleQuery := `INSERT INTO ` + metadataScheduleTable + `
-		(operator_code, schedule_code, travel_date, trip_code, trip_stage_code, updated_at)
+		(operator_code, schedule_code, trip_date, trip_code, trip_stage_code, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)`
 	if err := repository.session.Query(scheduleQuery, metadata.OperatorCode, metadata.ScheduleCode, metadata.TripDate,
 		metadata.TripCode, metadata.TripStageCode, metadata.UpdatedAt).WithContext(ctx).Exec(); err != nil {
@@ -127,7 +127,7 @@ func validIdentifier(value string) bool {
 // FindStagesByRoute returns candidate stages for a Search route in metadata order.
 func (repository *TripDetailsMetadataRepository) FindStagesByRoute(ctx context.Context, operatorCode, fromCode, toCode, tripDate string) ([]domain.TripDetailsStageMetadata, error) {
 	query := `SELECT trip_code, trip_stage_code, updated_at FROM ` + metadataRouteTable + `
-		WHERE operator_code=? AND travel_date=? AND from_station_code=? AND to_station_code=?`
+		WHERE operator_code=? AND trip_date=? AND from_station_code=? AND to_station_code=?`
 	iter := repository.session.Query(query, operatorCode, tripDate, fromCode, toCode).WithContext(ctx).Iter()
 	var results []domain.TripDetailsStageMetadata
 	for {
@@ -150,7 +150,7 @@ func (repository *TripDetailsMetadataRepository) FindStagesByRoute(ctx context.C
 // FindStagesBySchedule returns candidate stages for one operator schedule and date.
 func (repository *TripDetailsMetadataRepository) FindStagesBySchedule(ctx context.Context, operatorCode, scheduleCode, tripDate string) ([]domain.TripDetailsStageMetadata, error) {
 	query := `SELECT trip_code, trip_stage_code, updated_at FROM ` + metadataScheduleTable + `
-		WHERE operator_code=? AND schedule_code=? AND travel_date=?`
+		WHERE operator_code=? AND schedule_code=? AND trip_date=?`
 	iter := repository.session.Query(query, operatorCode, scheduleCode, tripDate).WithContext(ctx).Iter()
 	var results []domain.TripDetailsStageMetadata
 	for {
@@ -171,7 +171,7 @@ func (repository *TripDetailsMetadataRepository) FindStagesBySchedule(ctx contex
 
 // ListRouteMetadata scans existing route metadata for the protected future-trip dashboard summary.
 func (repository *TripDetailsMetadataRepository) ListRouteMetadata(ctx context.Context) ([]domain.TripDetailsStageMetadata, error) {
-	query := `SELECT operator_code, travel_date, from_station_code, to_station_code, trip_code, trip_stage_code, updated_at FROM ` + metadataRouteTable
+	query := `SELECT operator_code, trip_date, from_station_code, to_station_code, trip_code, trip_stage_code, updated_at FROM ` + metadataRouteTable
 	iter := repository.session.Query(query).WithContext(ctx).Iter()
 	results := make([]domain.TripDetailsStageMetadata, 0)
 	for {

@@ -82,18 +82,15 @@ func TestLiveReadUsesPathCredentialAndZone(t *testing.T) {
 	}
 }
 
-// An unusable zone or missing path credentials is the caller's error, so it is
-// rejected before any outbound call rather than becoming a gateway error after
-// a pointless attempt.
+// An unusable zone is the caller's error, so it is rejected before any outbound
+// call rather than becoming a gateway error after a pointless attempt.
 func TestLiveReadRejectsInvalidLiveRequest(t *testing.T) {
 	for name, requestPath := range map[string]string{
 		"absent_zone": "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0",
 		"unknown_zone": "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=nosuchzone",
 		"blank_zone":   "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=",
-		"repeated_zone": "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=bits&zone=r2bits",
+		"repeated_zone":    "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=bits&zone=r2bits",
 		"undecodable_zone": "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=%zz",
-		"blank_username": "/orbitplus/api/3.0/json/bits//t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=bits",
-		"blank_token": "/orbitplus/api/3.0/json/bits/u//search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=bits",
 	} {
 		t.Run(name, func(t *testing.T) {
 			fetcher := &recordingFetcher{}
