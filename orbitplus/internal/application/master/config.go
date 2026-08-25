@@ -22,7 +22,7 @@ type RuntimeConfig struct {
 	Storage            *StorageConfig
 	Queue              *QueueConfig
 	RabbitMQManagement *RabbitMQManagementConfig
-	OrbitRouteRefresh  *OrbitRouteRefreshConfig
+	OrbitRouteRefresh *OrbitRouteRefreshConfig
 	// Verification is nil when live Bits verification is disabled.
 	Verification *VerificationConfig
 	// VerificationError records why live verification is unavailable. It is
@@ -75,6 +75,7 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	config.OrbitRouteRefresh = orbitRouteRefresh
+	// A broken live path must not stop cached reads.
 	verification, err := loadVerificationConfig(config.AppEnvironment, config.Storage)
 	if err != nil {
 		config.VerificationError = err

@@ -16,21 +16,20 @@ import (
 
 func newTestClient(t *testing.T, server *httptest.Server) *bits.BitsTripDetailsClient {
 	t.Helper()
-	client, err := bits.NewBitsTripDetailsClient(server.Client(), master.VerificationConfig{
-		BitsBaseURL:   server.URL,
-		HTTPTimeout:   5 * time.Second,
-		MaxConcurrent: 1,
-	})
+	client, err := bits.NewBitsTripDetailsClient(server.Client(), master.Development)
 	if err != nil {
 		t.Fatalf("NewBitsTripDetailsClient: %v", err)
 	}
 	return client
 }
 
-func searchLookup() master.BitsLookup {
+// testServerLookup is the shared base for lookups aimed at a stub server. The
+// endpoint travels on the lookup now, so every test has to name it.
+func testServerLookup(server *httptest.Server) master.BitsLookup {
 	return master.BitsLookup{
 		Action:       master.BitsActionSearch,
 		OperatorCode: "OP1",
+		BaseURL:      server.URL,
 		Username:     "ram",
 		APIToken:     "TOKEN123",
 		FromCode:     "CITY_A",
@@ -51,7 +50,7 @@ func TestFetchTripDetailsSearchRoute(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := newTestClient(t, server).FetchTripDetails(context.Background(), searchLookup())
+	result, err := newTestClient(t, server).FetchTripDetails(context.Background(), testServerLookup(server))
 	if err != nil {
 		t.Fatalf("FetchTripDetails: %v", err)
 	}
@@ -91,6 +90,7 @@ func TestFetchTripDetailsBusMapRoute(t *testing.T) {
 	result, err := newTestClient(t, server).FetchTripDetails(context.Background(), master.BitsLookup{
 		Action:       master.BitsActionBusMap,
 		OperatorCode: "OP1",
+		BaseURL:      server.URL,
 		Username:     "ram",
 		APIToken:     "TOKEN123",
 		TripCode:     "TRIP_X",
@@ -122,10 +122,7 @@ func TestFetchTripDetailsEscapesDynamicSegments(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := bits.NewBitsTripDetailsClient(server.Client(), master.VerificationConfig{
-		BitsBaseURL: server.URL,
-		HTTPTimeout: 5 * time.Second,
-	})
+	client, err := bits.NewBitsTripDetailsClient(server.Client(), master.Development)
 	if err != nil {
 		t.Fatalf("NewBitsTripDetailsClient: %v", err)
 	}
@@ -133,6 +130,7 @@ func TestFetchTripDetailsEscapesDynamicSegments(t *testing.T) {
 	_, err = client.FetchTripDetails(context.Background(), master.BitsLookup{
 		Action:       master.BitsActionSearch,
 		OperatorCode: "OP/1",
+		BaseURL:      server.URL,
 		Username:     "user name",
 		APIToken:     "token/key",
 		FromCode:     "FROM A",
@@ -172,7 +170,7 @@ func TestFetchTripDetailsEmptyDataForms(t *testing.T) {
 			}))
 			defer server.Close()
 
-			result, err := newTestClient(t, server).FetchTripDetails(context.Background(), searchLookup())
+			result, err := newTestClient(t, server).FetchTripDetails(context.Background(), testServerLookup(server))
 			if err != nil {
 				t.Fatalf("FetchTripDetails returned %v, want nil: an empty data member is a successful fetch", err)
 			}
@@ -208,7 +206,7 @@ func TestFetchTripDetailsFailureModes(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := newTestClient(t, server).FetchTripDetails(context.Background(), searchLookup())
+			_, err := newTestClient(t, server).FetchTripDetails(context.Background(), testServerLookup(server))
 			if !errors.Is(err, master.ErrLiveSourceUnavailable) {
 				t.Fatalf("error = %v, want ErrLiveSourceUnavailable", err)
 			}
@@ -223,15 +221,12 @@ func TestFetchTripDetailsErrorNeverLeaksCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := bits.NewBitsTripDetailsClient(server.Client(), master.VerificationConfig{
-		BitsBaseURL: server.URL,
-		HTTPTimeout: 5 * time.Second,
-	})
+	client, err := bits.NewBitsTripDetailsClient(server.Client(), master.Development)
 	if err != nil {
 		t.Fatalf("NewBitsTripDetailsClient: %v", err)
 	}
 
-	lookup := searchLookup()
+	lookup := testServerLookup(server)
 	lookup.Username = "SECRET_USER"
 	lookup.APIToken = "SECRET_TOKEN"
 	_, err = client.FetchTripDetails(context.Background(), lookup)
@@ -253,7 +248,7 @@ func TestFetchTripDetailsSendsNoCredentialHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := newTestClient(t, server).FetchTripDetails(context.Background(), searchLookup()); err != nil {
+	if _, err := newTestClient(t, server).FetchTripDetails(context.Background(), testServerLookup(server)); err != nil {
 		t.Fatalf("FetchTripDetails: %v", err)
 	}
 	if auth := receivedHeaders.Get("Authorization"); auth != "" {
@@ -274,7 +269,7 @@ func TestFetchTripDetailsRejectsUnsupportedAction(t *testing.T) {
 	}))
 	defer server.Close()
 
-	lookup := searchLookup()
+	lookup := testServerLookup(server)
 	lookup.Action = "SEARCHBUSMAP"
 	_, err := newTestClient(t, server).FetchTripDetails(context.Background(), lookup)
 	if !errors.Is(err, master.ErrLiveSourceUnavailable) {
@@ -282,26 +277,32 @@ func TestFetchTripDetailsRejectsUnsupportedAction(t *testing.T) {
 	}
 }
 
-func TestFetchTripDetailsStripsBaseURLQueryAndFragment(t *testing.T) {
-	var receivedQuery string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedQuery = r.URL.RawQuery
-		_, _ = w.Write([]byte(`{"status":1,"data":[]}`))
+// A zone endpoint carrying a query, a fragment, or userinfo is rejected rather
+// than silently cleaned. The endpoint now arrives per request, so accepting a
+// malformed one would mean guessing at what the caller's zone really was.
+func TestFetchTripDetailsRejectsMalformedZoneEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("no request should be issued for a malformed zone endpoint")
 	}))
 	defer server.Close()
 
-	client, err := bits.NewBitsTripDetailsClient(server.Client(), master.VerificationConfig{
-		BitsBaseURL: server.URL + "/prefix?stray=1#frag",
-		HTTPTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("NewBitsTripDetailsClient: %v", err)
-	}
-	if _, err := client.FetchTripDetails(context.Background(), searchLookup()); err != nil {
-		t.Fatalf("FetchTripDetails: %v", err)
-	}
-	if receivedQuery != "" {
-		t.Errorf("query = %q, want empty: a stray base-URL query must be discarded", receivedQuery)
+	for name, baseURL := range map[string]string{
+		"absent":     "",
+		"query":      server.URL + "/prefix?stray=1",
+		"fragment":   server.URL + "/prefix#frag",
+		"userinfo":   "http://user:pass@app.example.com",
+		"no host":    "http:///path",
+		"bad scheme": "ftp://app.example.com",
+		"not a URL":  "://",
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookup := testServerLookup(server)
+			lookup.BaseURL = baseURL
+			_, err := newTestClient(t, server).FetchTripDetails(context.Background(), lookup)
+			if !errors.Is(err, master.ErrLiveSourceUnavailable) {
+				t.Fatalf("error = %v, want ErrLiveSourceUnavailable", err)
+			}
+		})
 	}
 }
 
@@ -316,16 +317,13 @@ func TestFetchTripDetailsHonoursTimeout(t *testing.T) {
 
 	httpClient := server.Client()
 	httpClient.Timeout = 50 * time.Millisecond
-	client, err := bits.NewBitsTripDetailsClient(httpClient, master.VerificationConfig{
-		BitsBaseURL: server.URL,
-		HTTPTimeout: 50 * time.Millisecond,
-	})
+	client, err := bits.NewBitsTripDetailsClient(httpClient, master.Development)
 	if err != nil {
 		t.Fatalf("NewBitsTripDetailsClient: %v", err)
 	}
 
 	started := time.Now()
-	_, err = client.FetchTripDetails(context.Background(), searchLookup())
+	_, err = client.FetchTripDetails(context.Background(), testServerLookup(server))
 	if !errors.Is(err, master.ErrLiveSourceUnavailable) {
 		t.Fatalf("error = %v, want ErrLiveSourceUnavailable", err)
 	}
@@ -350,7 +348,7 @@ func TestFetchTripDetailsRejectsMissingCredential(t *testing.T) {
 		"username blank":  func(l *master.BitsLookup) { l.Username = "   " },
 	} {
 		t.Run(name, func(t *testing.T) {
-			lookup := searchLookup()
+			lookup := testServerLookup(server)
 			mutate(&lookup)
 			_, err := newTestClient(t, server).FetchTripDetails(context.Background(), lookup)
 			if !errors.Is(err, master.ErrLiveSourceUnavailable) {
@@ -372,7 +370,7 @@ func TestFetchTripDetailsUsesPerLookupCredentials(t *testing.T) {
 
 	client := newTestClient(t, server)
 	for _, credential := range [][2]string{{"ram", "TOKEN123"}, {"other", "TOKEN456"}} {
-		lookup := searchLookup()
+		lookup := testServerLookup(server)
 		lookup.Username, lookup.APIToken = credential[0], credential[1]
 		if _, err := client.FetchTripDetails(context.Background(), lookup); err != nil {
 			t.Fatalf("FetchTripDetails(%s): %v", credential[0], err)
@@ -420,7 +418,7 @@ func TestFetchTripDetailsClassifiesBitsRejection(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := newTestClient(t, server).FetchTripDetails(context.Background(), searchLookup())
+			_, err := newTestClient(t, server).FetchTripDetails(context.Background(), testServerLookup(server))
 			if !errors.Is(err, master.ErrLiveSourceRejected) {
 				t.Fatalf("error = %v, want ErrLiveSourceRejected", err)
 			}
@@ -454,7 +452,7 @@ func TestFetchTripDetailsDoesNotTreatSuccessAsRejection(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := newTestClient(t, server).FetchTripDetails(context.Background(), searchLookup())
+			_, err := newTestClient(t, server).FetchTripDetails(context.Background(), testServerLookup(server))
 			if testCase.wantError == nil {
 				if err != nil {
 					t.Fatalf("FetchTripDetails: %v", err)
@@ -478,7 +476,7 @@ func TestFetchTripDetailsRejectionErrorCarriesNoUpstreamText(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := newTestClient(t, server).FetchTripDetails(context.Background(), searchLookup())
+	_, err := newTestClient(t, server).FetchTripDetails(context.Background(), testServerLookup(server))
 	if err == nil {
 		t.Fatal("expected an error")
 	}

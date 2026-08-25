@@ -33,6 +33,10 @@ const (
 	// freshness, and storing it would fill a drift table with rows that are not
 	// drift. The outcome exists so the log can still name what happened.
 	OutcomeSourceRejected VerificationOutcome = "SOURCE_REJECTED"
+	// OutcomeCredentialUnavailable means the live request did not carry both
+	// path credentials, so no outbound fetch was attempted. Like a rejection it
+	// stores no row, because nothing was learned about the cache.
+	OutcomeCredentialUnavailable VerificationOutcome = "CREDENTIAL_UNAVAILABLE"
 )
 
 // EntryIdentity pairs a cached entry with a Bits entry. Two entries describe

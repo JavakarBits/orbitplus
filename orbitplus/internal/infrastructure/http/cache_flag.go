@@ -22,24 +22,34 @@ const (
 // patterns stay unchanged and no existing caller breaks.
 const cacheFlagParameter = "cacheFlag"
 
+// zoneParameter is the query parameter naming the Bits zone the live fetch must
+// use. It is a query parameter for the same reason cacheFlag is: the path
+// mirrors Bits' own route shape, and adding a segment would break every caller.
+const zoneParameter = "zone"
+
 // errInvalidCacheFlag reports a Cache_Flag that is absent from the accepted
 // set, undecodable, or supplied more than once.
 var errInvalidCacheFlag = errors.New("invalid cache flag")
 
-// parseCacheFlag reads the Cache_Flag from a raw query string.
+// errInvalidZone reports a zone that is undecodable, blank, or supplied more
+// than once.
+var errInvalidZone = errors.New("invalid zone")
+
+// errAmbiguousParameter reports a parameter that is undecodable or repeated.
+var errAmbiguousParameter = errors.New("ambiguous query parameter")
+
+// singleQueryValue returns the sole decoded value for name.
 //
-// This walks rawQuery itself rather than using url.ParseQuery because
-// url.Values cannot express the three outcomes this feature needs to keep
-// apart: absent, present but undecodable, and present more than once.
-// url.ParseQuery collapses repeats into a slice only after silently dropping
-// pairs it failed to unescape, which would let a malformed flag be read as
-// absent and therefore be served from cache.
+// It walks rawQuery itself rather than using url.ParseQuery because url.Values
+// cannot express the three outcomes these parameters need to keep apart:
+// absent, present but undecodable, and present more than once. url.ParseQuery
+// collapses repeats into a slice only after silently dropping pairs it failed
+// to unescape, which would let a malformed value be read as absent.
 //
-// Comparison is byte-for-byte against "0" and "1" with no trimming, no numeric
-// normalisation, and no case folding, so "00", "+1", " 1" and "true" are all
-// rejected rather than being coerced to a value the caller did not ask for.
-func parseCacheFlag(rawQuery string) (int, error) {
-	flag := cacheFlagFromCache
+// A parameter this service does not own is ignored, including one whose name
+// cannot be decoded, so an unrelated malformed parameter cannot fail a request.
+func singleQueryValue(rawQuery, name string) (string, bool, error) {
+	value := ""
 	found := false
 
 	for remainder := rawQuery; remainder != ""; {
@@ -50,29 +60,61 @@ func parseCacheFlag(rawQuery string) (int, error) {
 		}
 		rawName, rawValue, _ := strings.Cut(pair, "=")
 
-		name, err := url.QueryUnescape(rawName)
-		if err != nil || name != cacheFlagParameter {
-			// A parameter this feature does not own, including one whose name
-			// cannot be decoded, is ignored rather than rejected.
+		decodedName, err := url.QueryUnescape(rawName)
+		if err != nil || decodedName != name {
 			continue
 		}
 		if found {
-			return cacheFlagFromCache, errInvalidCacheFlag
+			return "", false, errAmbiguousParameter
 		}
 		found = true
 
-		value, err := url.QueryUnescape(rawValue)
+		decodedValue, err := url.QueryUnescape(rawValue)
 		if err != nil {
-			return cacheFlagFromCache, errInvalidCacheFlag
+			return "", false, errAmbiguousParameter
 		}
-		switch value {
-		case "1":
-			flag = cacheFlagFromCache
-		case "0":
-			flag = cacheFlagFromLive
-		default:
-			return cacheFlagFromCache, errInvalidCacheFlag
-		}
+		value = decodedValue
 	}
-	return flag, nil
+	return value, found, nil
+}
+
+// parseZoneCode reads the zone from a raw query string. An absent zone returns
+// an empty string and no error, so the cached path stays unaffected; requiring
+// it is the live path's decision.
+func parseZoneCode(rawQuery string) (string, error) {
+	value, found, err := singleQueryValue(rawQuery, zoneParameter)
+	if err != nil {
+		return "", errInvalidZone
+	}
+	if !found {
+		return "", nil
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", errInvalidZone
+	}
+	return value, nil
+}
+
+// parseCacheFlag reads the Cache_Flag from a raw query string.
+//
+// Comparison is byte-for-byte against "0" and "1" with no trimming, no numeric
+// normalisation, and no case folding, so "00", "+1", " 1" and "true" are all
+// rejected rather than being coerced to a value the caller did not ask for.
+// An absent flag serves from cache, so existing callers keep today's behaviour.
+func parseCacheFlag(rawQuery string) (int, error) {
+	value, found, err := singleQueryValue(rawQuery, cacheFlagParameter)
+	if err != nil {
+		return cacheFlagFromCache, errInvalidCacheFlag
+	}
+	if !found {
+		return cacheFlagFromCache, nil
+	}
+	switch value {
+	case "1":
+		return cacheFlagFromCache, nil
+	case "0":
+		return cacheFlagFromLive, nil
+	default:
+		return cacheFlagFromCache, errInvalidCacheFlag
+	}
 }

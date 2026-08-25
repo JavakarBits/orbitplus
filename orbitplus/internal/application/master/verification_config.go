@@ -23,34 +23,25 @@ const (
 
 // VerificationConfig holds the settings enabling live Bits verification.
 //
-// It deliberately carries no credentials. Those arrive per request on the read
-// route and travel on the BitsLookup, so there is no process-wide identity to
-// leak through configuration, and nothing here has to be treated as a secret.
+// It carries neither credentials nor an endpoint. Credentials and the zone
+// come from the read request, so nothing here is a secret and nothing here can
+// point the service at the wrong zone.
 type VerificationConfig struct {
-	BitsBaseURL   string
 	HTTPTimeout   time.Duration
 	MaxConcurrent int
 }
 
-// loadVerificationConfig reads the live verification environment group.
+// loadVerificationConfig reads the live verification tuning group.
 //
-// BITS_BASE_URL alone is the switch: unset means the feature is disabled, which
-// is the default because the read routes it hangs off are unauthenticated.
-// Credentials are not configured at all, they come from each request, so an
-// operator only has to supply the endpoint.
+// There is nothing to enable here: the live path is available whenever storage
+// exists, because comparison and repair depend on the persisted copy. The
+// endpoint is chosen per request from the zone, and credentials are bound from
+// the read route.
 //
 // BITS_HTTP_TIMEOUT and LIVE_VERIFICATION_MAX_CONCURRENT are optional tuning.
 // Unset means the default; set but unparseable is an error rather than a silent
 // fallback, since a typo there would quietly change outbound load.
-func loadVerificationConfig(environment AppEnvironment, storage *StorageConfig) (*VerificationConfig, error) {
-	baseURL := strings.TrimSpace(os.Getenv("BITS_BASE_URL"))
-	if baseURL == "" {
-		return nil, nil
-	}
-	if err := ValidateBitsURL(baseURL, environment); err != nil {
-		return nil, err
-	}
-
+func loadVerificationConfig(_ AppEnvironment, storage *StorageConfig) (*VerificationConfig, error) {
 	timeout := defaultBitsHTTPTimeout
 	if rawTimeout := strings.TrimSpace(os.Getenv("BITS_HTTP_TIMEOUT")); rawTimeout != "" {
 		parsed, err := time.ParseDuration(rawTimeout)
@@ -77,7 +68,6 @@ func loadVerificationConfig(environment AppEnvironment, storage *StorageConfig) 
 	}
 
 	return &VerificationConfig{
-		BitsBaseURL:   baseURL,
 		HTTPTimeout:   timeout,
 		MaxConcurrent: maxConcurrent,
 	}, nil
@@ -86,11 +76,14 @@ func loadVerificationConfig(environment AppEnvironment, storage *StorageConfig) 
 // ValidateBitsURL permits https in every environment and http only outside
 // production. Userinfo, a query, and a fragment are rejected because the
 // adapter appends path segments and would silently discard them.
+//
+// It is applied to the zone endpoint on every live fetch rather than once at
+// startup, because the endpoint is now chosen per request.
 func ValidateBitsURL(rawURL string, environment AppEnvironment) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
 		parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("BITS_BASE_URL must be a valid endpoint without user information, query, or fragment")
+		return fmt.Errorf("zone endpoint must be a valid endpoint without user information, query, or fragment")
 	}
 	if parsed.Scheme == "https" {
 		return nil
