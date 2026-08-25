@@ -17,7 +17,16 @@ var zoneURLByCode = map[string]string{
 	"sbmbits":      "http://app.sbmbus.com",
 }
 
+func NormalizeZoneCode(zoneCode string) (string, bool) {
+	zoneCode = strings.ToLower(strings.TrimSpace(zoneCode))
+	_, exists := zoneURLByCode[zoneCode]
+	return zoneCode, exists
+}
+
 func zoneURLFor(zoneCode string) (string, bool) {
-	zoneURL, exists := zoneURLByCode[strings.ToLower(strings.TrimSpace(zoneCode))]
-	return zoneURL, exists
+	zoneCode, exists := NormalizeZoneCode(zoneCode)
+	if !exists {
+		return "", false
+	}
+	return zoneURLByCode[zoneCode], true
 }

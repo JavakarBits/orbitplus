@@ -1,7 +1,14 @@
-export const ADMIN_ENDPOINTS = Object.freeze({ dashboard: "/orbitplus/api/admin/dashboard", tripHistory: "/orbitplus/api/admin/trip-history", cache: "/orbitplus/cache", cacheKeys: "/orbitplus/api/cache", cacheValue: "/orbitplus/api/cache/value", reports: "/orbitplus/reports", rabbitmq: "/orbitplus/rabbitmq", routeMetadata: "/orbitplus/api/tables/route-metadata" });
+export const ADMIN_ENDPOINTS = Object.freeze({ dashboard: "/orbitplus/api/admin/dashboard", tripHistory: "/orbitplus/api/admin/trip-history", operators: "/orbitplus/api/admin/operators", cache: "/orbitplus/cache", cacheKeys: "/orbitplus/api/cache", cacheValue: "/orbitplus/api/cache/value", reports: "/orbitplus/reports", rabbitmq: "/orbitplus/rabbitmq", routeMetadata: "/orbitplus/api/tables/route-metadata" });
 
 async function readAPI(fetcher, endpoint, signal) {
   const response = await fetcher(endpoint, { credentials: "same-origin", signal });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(payload?.message || `Request failed (${response.status})`);
+  return payload?.data ?? payload;
+}
+
+async function writeAPI(fetcher, endpoint, method, data) {
+  const response = await fetcher(endpoint, { method, credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(payload?.message || `Request failed (${response.status})`);
   return payload?.data ?? payload;
@@ -26,6 +33,9 @@ export class AdminPortalService {
     const query = new URLSearchParams({ operator: operator || "", travel: travel || "", from: from || "", to: to || "" });
     return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.routeMetadata}?${query}`, signal);
   }
+  operators({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.operators, signal); }
+  createOperator(operatorCode, zoneCode) { return writeAPI(this.fetcher, ADMIN_ENDPOINTS.operators, "POST", { operatorCode, zoneCode }); }
+  setOperatorActive(operatorCode, active) { return writeAPI(this.fetcher, `${ADMIN_ENDPOINTS.operators}/${encodeURIComponent(operatorCode)}`, "PATCH", { active }); }
 }
 
 export const adminPortalService = new AdminPortalService();

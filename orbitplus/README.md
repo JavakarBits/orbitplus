@@ -41,9 +41,9 @@ orbitplusworker submits TripDetails data as a JSON envelope:
 
 ## Running locally
 
+A local `.env` file in the repository root is loaded automatically by `go run ./cmd/orbitplusmaster`. It is ignored by Git. Process environment variables take precedence over `.env`, so production services should use their platform's secret manager or environment configuration.
+
 ```powershell
-$env:APP_ENV="development"
-$env:MASTER_API_PORT="8082"
 go run ./cmd/orbitplusmaster
 ```
 
@@ -97,4 +97,18 @@ Each Worker job includes `referenceId`, sourced from Orionmax `data[].refid`. Th
 
 ## Route refresh
 
-The Cassandra-backed `periodic_refresh_routes` flow is removed. Periodic route retrieval and queueing are disabled until the Orbit route API response contract is available. The future implementation will obtain route details directly from that API rather than storing them in `periodic_refresh_routes`.
+Periodic route refresh is disabled unless persistence, RabbitMQ, the Orbit route settings below, and a stale duration are configured. It never creates or uses a `periodic_refresh_routes` table and never runs schema changes at runtime.
+
+The scheduler does not run immediately on startup and permits only one run at a time. On each interval it reads active operators and their supported `zone_code` values from Cassandra, then fetches each operator's Orbit route response. It reads only persisted route pairs whose latest metadata update is at least the configured stale duration old, considers trip dates from today through seven days ahead inclusive, and deduplicates `(operatorCode, tripDate, fromCode, toCode)` pairs by latest `updated_at`.
+
+Only a stale persisted pair that appears in the operator's current Orbit route response is queued. A destination in `topRoute` queues at priority 9; a destination in the normal `route` queues at priority 8. The Worker job is `searchbusmap` and contains `referenceId`, `operatorCode`, `zoneURL`, `fromCode`, `toCode`, and `tripDate`; no trip code is invented. Orionmax inventory jobs remain priority 10. The deterministic periodic reference ID includes the metadata update time, preventing re-publication of QUEUED or COMPLETED jobs for the same metadata version while allowing a newly updated route to become eligible again after it becomes stale.
+
+| Variable | Required to enable | Description |
+|---|---|---|
+| `ORBIT_ROUTE_BASE_URL` | Yes | HTTPS/HTTP Orbit host. Master adds the operator-specific `/orbitservices/ezeeinfo/{operatorCode}/{accessToken}/top/route` path without logging it. |
+| `ORBIT_ROUTE_ACCESS_TOKEN` | Yes | Shared Orbit access token used for every active operator. The operator's supported `zone_code` is stored in Cassandra and resolved to its Worker URL at runtime. |
+| `ORBIT_ROUTE_TIMEOUT` | Yes | Positive Go duration for the standard-library HTTP client, for example `5s`. |
+| `ORBIT_ROUTE_REFRESH_INTERVAL` | Yes | Positive scheduler interval, for example `1m` for local testing or `15m` in production. |
+| `ORBIT_ROUTE_STALE_DURATION` | Yes | How long persisted route metadata can remain unchanged before it is eligible, for example `1m` for testing or `1h` in production. |
+
+Keep `ORBIT_ROUTE_ACCESS_TOKEN` in a secret manager or deployment environment. It is neither logged nor stored in Cassandra, RabbitMQ payloads, CQL, or this repository.

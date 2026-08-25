@@ -46,7 +46,31 @@ func main() {
 		rabbitMQManagementReader = rabbitmq.NewManagementClient(*config.RabbitMQManagement)
 	}
 
-	orionmaxInventoryChangeService := master.NewOrionmaxInventoryEventService(inventoryPublisher, metadata, metrix)
+	var operatorRegistry master.OperatorRegistry
+	if metrix != nil {
+		operatorRegistry = metrix
+	}
+	orionmaxInventoryChangeService := master.NewOrionmaxInventoryEventService(inventoryPublisher, metadata, metrix, operatorRegistry)
+	closeOrbitRouteRefresh := func() {}
+	switch {
+	case config.OrbitRouteRefresh == nil:
+		log.Print("Orbit periodic route refresh scheduler disabled: configure ORBIT_ROUTE_BASE_URL, ORBIT_ROUTE_ACCESS_TOKEN, ORBIT_ROUTE_TIMEOUT, ORBIT_ROUTE_REFRESH_INTERVAL, and ORBIT_ROUTE_STALE_DURATION")
+	case metadata == nil || metrix == nil:
+		log.Print("Orbit periodic route refresh scheduler disabled: Cassandra persistence and Queue Metrics storage are required")
+	case operatorRegistry == nil:
+		log.Print("Orbit periodic route refresh scheduler disabled: operator registry is unavailable")
+	case inventoryPublisher == nil:
+		log.Print("Orbit periodic route refresh scheduler disabled: RabbitMQ publishing is not configured")
+	default:
+		publisher, ok := inventoryPublisher.(master.PriorityInventoryEventPublisher)
+		if !ok {
+			log.Print("Orbit periodic route refresh scheduler disabled: RabbitMQ publisher does not support priorities")
+		} else {
+			closeOrbitRouteRefresh = master.NewOrbitRouteRefreshService(*config.OrbitRouteRefresh, metadata, metrix, metrix, operatorRegistry, publisher).Start()
+			log.Print("Orbit periodic route refresh scheduler enabled")
+		}
+	}
+	defer closeOrbitRouteRefresh()
 	queueJobsService := master.NewQueueJobsService(metrix)
 	tripFreshnessService := master.NewTripFreshnessService(metadata)
 	var tripHistoryReader master.TripHistoryQueueReader
@@ -56,7 +80,7 @@ func main() {
 	tripHistoryService := master.NewTripHistoryService(tripHistoryReader)
 	tablesService := master.NewTablesService(metadata)
 	uiAccessAuth := masterhttp.NewUIAccessAuth(config.UIAccessToken, config.AppEnvironment == master.Production)
-	router := masterhttp.NewRouter(startedAt, tripDetailsService, orionmaxInventoryChangeService, readService, cacheService, rabbitMQManagementReader, queueJobsService, tripFreshnessService, tripHistoryService, tablesService, uiAccessAuth)
+	router := masterhttp.NewRouter(startedAt, tripDetailsService, orionmaxInventoryChangeService, readService, cacheService, rabbitMQManagementReader, queueJobsService, tripFreshnessService, tripHistoryService, tablesService, operatorRegistry, uiAccessAuth)
 	server := &http.Server{Addr: config.Address(), Handler: router}
 	log.Printf("orbitplusmaster listening on %s", config.Address())
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

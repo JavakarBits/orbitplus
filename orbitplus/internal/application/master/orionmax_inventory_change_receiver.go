@@ -23,14 +23,15 @@ type OrionmaxInventoryEventService struct {
 	publisher InventoryEventPublisher
 	schedules InventoryScheduleReader
 	metrix    QueueMetrixStorage
+	operators OperatorRegistry
 }
 
 // NewOrionmaxInventoryEventService constructs an inventory-event receiver.
-func NewOrionmaxInventoryEventService(publisher InventoryEventPublisher, schedules InventoryScheduleReader, metrix QueueMetrixStorage) *OrionmaxInventoryEventService {
-	return &OrionmaxInventoryEventService{logger: log.Default(), publisher: publisher, schedules: schedules, metrix: metrix}
+func NewOrionmaxInventoryEventService(publisher InventoryEventPublisher, schedules InventoryScheduleReader, metrix QueueMetrixStorage, operators OperatorRegistry) *OrionmaxInventoryEventService {
+	return &OrionmaxInventoryEventService{logger: log.Default(), publisher: publisher, schedules: schedules, metrix: metrix, operators: operators}
 }
 
-// ReceiveInventoryChange logs, records, and publishes one Worker job per data item.
+// ReceiveInventoryChange logs, registers operators, and publishes active jobs.
 func (service *OrionmaxInventoryEventService) ReceiveInventoryChange(ctx context.Context, activityType string, rawBody []byte) error {
 	service.logger.Printf("Orionmax inventory change received: activity_type=%q bytes=%d payload=%s", activityType, len(rawBody), rawBody)
 	if service.publisher == nil {
@@ -44,6 +45,16 @@ func (service *OrionmaxInventoryEventService) ReceiveInventoryChange(ctx context
 		return err
 	}
 	for _, item := range event.Data {
+		if service.operators != nil {
+			operator, err := service.operators.RegisterOperator(ctx, item.OperatorCode, event.Zone)
+			if err != nil {
+				return err
+			}
+			if !operator.Active() {
+				service.logger.Printf("Orionmax inventory change skipped for inactive operator: operator_code=%q", operator.Code)
+				continue
+			}
+		}
 		now := time.Now().UTC()
 		metric := newQueueMetrix(activityType, actionType, event.Zone, item, now)
 		if metric.ReferenceID == "" {

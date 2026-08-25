@@ -18,3 +18,8 @@ type QueueMetrixStorage interface {
 type QueueMetrixReader interface {
 	List(context.Context, int) ([]domain.QueueMetrix, error)
 }
+
+// QueueMetrixReferenceReader reads one queue lifecycle record by its exact reference ID.
+type QueueMetrixReferenceReader interface {
+	FindByReferenceID(context.Context, string) (domain.QueueMetrix, bool, error)
+}

@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS trip_details_metadata_by_schedule (
 );
 
 
+-- One row per configured or discovered operator. active_flag=1 is the active
+-- partition selected by route refresh; Master registers new operators as active.
+CREATE TABLE IF NOT EXISTS operators (
+    active_flag int,
+    operator_code text,
+    zone_code text,
+    created_at timestamp,
+    updated_at timestamp,
+    PRIMARY KEY ((active_flag), operator_code)
+);
+
 -- One row per Orionmax data[] item. reference_id is Orionmax data[].refid and
 -- is echoed by the Worker as referenceId in its TripDetails result envelope.
 CREATE TABLE IF NOT EXISTS queue_metrix (

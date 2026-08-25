@@ -82,7 +82,7 @@ func (repository *TripDetailsMetadataRepository) ListStaleRouteMetadata(ctx cont
 	}
 	results := make([]domain.TripDetailsStageMetadata, 0)
 	for _, metadata := range latest {
-		if metadata.UpdatedAt.Before(cutoff) {
+		if !metadata.UpdatedAt.After(cutoff) {
 			results = append(results, metadata)
 		}
 	}

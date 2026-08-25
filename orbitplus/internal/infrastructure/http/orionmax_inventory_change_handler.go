@@ -58,7 +58,7 @@ func (handler *OrionmaxInventoryChangeHandler) writeInventoryError(response http
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid inventory event")
 	case errors.Is(err, master.ErrTripCodeUnavailable):
 		writeJSONStatus(response, http.StatusConflict, 0, "Trip code is not available for this schedule")
-	case errors.Is(err, master.ErrZoneURLUnavailable):
+	case errors.Is(err, master.ErrZoneURLUnavailable), errors.Is(err, master.ErrInvalidOperatorZoneCode):
 		writeJSONStatus(response, http.StatusUnprocessableEntity, 0, "Zone URL is not available for this zone")
 	default:
 		handler.logger.Printf("Orionmax inventory change processing failed: %v", err)

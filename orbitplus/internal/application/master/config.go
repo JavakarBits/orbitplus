@@ -22,6 +22,7 @@ type RuntimeConfig struct {
 	Storage            *StorageConfig
 	Queue              *QueueConfig
 	RabbitMQManagement *RabbitMQManagementConfig
+	OrbitRouteRefresh  *OrbitRouteRefreshConfig
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment variables are set.
@@ -29,8 +30,11 @@ func DefaultRuntimeConfig() RuntimeConfig {
 	return RuntimeConfig{AppEnvironment: Development, APIPort: 8082}
 }
 
-// LoadRuntimeConfig reads APP_ENV, MASTER_API_PORT, and optional datastore configuration.
+// LoadRuntimeConfig reads local .env settings, then runtime configuration.
 func LoadRuntimeConfig() (RuntimeConfig, error) {
+	if err := loadDotEnv(".env"); err != nil {
+		return RuntimeConfig{}, fmt.Errorf("load .env: %w", err)
+	}
 	config := DefaultRuntimeConfig()
 	if value := os.Getenv("APP_ENV"); value != "" {
 		config.AppEnvironment = AppEnvironment(value)
@@ -59,6 +63,11 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	config.RabbitMQManagement = rabbitMQManagement
+	orbitRouteRefresh, err := loadOrbitRouteRefreshConfig()
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	config.OrbitRouteRefresh = orbitRouteRefresh
 	return config, nil
 }
 

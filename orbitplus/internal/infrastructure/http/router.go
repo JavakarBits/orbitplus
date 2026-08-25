@@ -9,7 +9,7 @@ import (
 )
 
 // NewRouter builds HTTP routing for the protected UI, ingestion, health, and persisted read APIs.
-func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, uiAccessAuth *UIAccessAuth) http.Handler {
+func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, uiAccessAuth *UIAccessAuth) http.Handler {
 	readHandler := NewTripDetailsReadHandler(readService)
 	queueJobsHandler := NewQueueJobsReportHandler(queueJobsService)
 	queueDashboardHandler := NewQueueDashboardHandler(queueJobsService)
@@ -19,6 +19,7 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	rabbitMQDashboardHandler := NewRabbitMQDashboardHandler(rabbitMQManagement)
 	tablesHandler := NewTablesHandler(tablesService)
 	tripHistoryHandler := NewTripHistoryHandler(tripHistoryService)
+	operatorsHandler := NewOperatorsHandler(operatorRegistry)
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /{$}", redirectTo("/orbitplus/login"))
@@ -51,6 +52,9 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	mux.Handle("GET /orbitplus/api/dashboard/system-health", uiAccessAuth.RequireAPI(systemHealthHandler))
 	mux.Handle("GET /orbitplus/api/admin/dashboard", uiAccessAuth.RequireAPI(adminDashboardHandler))
 	mux.Handle("GET /orbitplus/api/admin/trip-history", uiAccessAuth.RequireAPI(tripHistoryHandler))
+	mux.Handle("GET /orbitplus/api/admin/operators", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeList)))
+	mux.Handle("POST /orbitplus/api/admin/operators", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeCreate)))
+	mux.Handle("PATCH /orbitplus/api/admin/operators/{operatorCode}", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeStatus)))
 	mux.Handle("GET /orbitplus/api/cache", uiAccessAuth.RequireAPI(cacheHandler))
 	mux.Handle("GET /orbitplus/api/cache/value", uiAccessAuth.RequireAPI(http.HandlerFunc(cacheHandler.ServeValue)))
 	mux.Handle("GET /orbitplus/api/rabbitmq", uiAccessAuth.RequireAPI(rabbitMQDashboardHandler))

@@ -44,7 +44,12 @@ func NewInventoryEventPublisher(url, exchange string) (*InventoryEventPublisher,
 
 // PublishInventoryEvent publishes an Orionmax event at its fixed highest priority.
 func (publisher *InventoryEventPublisher) PublishInventoryEvent(ctx context.Context, referenceID string, payload []byte) error {
-	return publisher.publish(ctx, referenceID, payload, 10)
+	return publisher.PublishInventoryEventWithPriority(ctx, referenceID, payload, 10)
+}
+
+// PublishInventoryEventWithPriority publishes a Worker job with the supplied AMQP priority.
+func (publisher *InventoryEventPublisher) PublishInventoryEventWithPriority(ctx context.Context, referenceID string, payload []byte, priority uint8) error {
+	return publisher.publish(ctx, referenceID, payload, priority)
 }
 
 func (publisher *InventoryEventPublisher) publish(ctx context.Context, referenceID string, payload []byte, priority uint8) error {

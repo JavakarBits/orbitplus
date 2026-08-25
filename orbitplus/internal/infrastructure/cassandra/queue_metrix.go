@@ -2,6 +2,7 @@ package cassandra
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gocql/gocql"
@@ -51,6 +52,27 @@ func (repository *QueueMetrixRepository) SaveReceived(ctx context.Context, metri
 		return fmt.Errorf("save queue metrix received record: %w", err)
 	}
 	return nil
+}
+
+// FindByReferenceID returns one queue lifecycle record by its exact primary key.
+func (repository *QueueMetrixRepository) FindByReferenceID(ctx context.Context, referenceID string) (domain.QueueMetrix, bool, error) {
+	const query = `SELECT reference_id, activity_type, action_type, operator_code, schedule_code, trip_code,
+		from_station, to_station, travel_date, zone, message, trip_codes, queue_status, queued_at, completed_at,
+		dead_lettered_at, failure_message, updated_at FROM queue_metrix WHERE reference_id=?`
+	var metric domain.QueueMetrix
+	var message string
+	err := repository.session.Query(query, referenceID).WithContext(ctx).Scan(&metric.ReferenceID, &metric.ActivityType, &metric.ActionType,
+		&metric.OperatorCode, &metric.ScheduleCode, &metric.TripCode, &metric.SourceStationCode, &metric.DestinationStationCode,
+		&metric.TripDate, &metric.Zone, &message, &metric.UpdatedTripCodes, &metric.QueueStatus, &metric.QueuedAt,
+		&metric.CompletedAt, &metric.DeadLetteredAt, &metric.FailureMessage, &metric.UpdatedAt)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return domain.QueueMetrix{}, false, nil
+	}
+	if err != nil {
+		return domain.QueueMetrix{}, false, fmt.Errorf("find queue metrix record: %w", err)
+	}
+	metric.WorkerPayload = append(metric.WorkerPayload, message...)
+	return metric, true, nil
 }
 
 // MarkQueued records a broker-confirmed publication.

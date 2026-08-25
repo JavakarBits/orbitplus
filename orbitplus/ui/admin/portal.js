@@ -11,6 +11,7 @@ const routes = [
   { id: "failures", label: "Failures & DLQ", icon: "⚠" },
   { id: "dragonfly", label: "Dragonfly (Cache)", icon: "◆" },
   { id: "cassandra", label: "Cassandra (Metadata)", icon: "▤" },
+  { id: "operators", label: "Operators", icon: "♙" },
   { id: "reports", label: "Reports", icon: "▥" }
 ];
 const SERIES = ["#6c5ce7", "#3f7ff0", "#16a06a", "#dd9016", "#d94b5c", "#1899b0", "#a05bd0", "#7b879e"];
@@ -316,6 +317,104 @@ async function showCacheValue(key) {
   }
 }
 
+const operators = { code: "", zoneCode: "", items: [], state: "idle", message: "", mutation: "" };
+let operatorsController;
+
+function operatorsResult() {
+  if (operators.state === "loading" && !operators.items.length) return `<div class="op-empty">Loading operators…</div>`;
+  if (operators.state === "error") return `<div class="op-empty cm-error">${esc(operators.message || "Unable to load operators.")}</div>`;
+  if (!operators.items.length) return `<div class="op-empty">No operators are registered yet.</div>`;
+  const rows = operators.items.map((operator) => {
+    const action = operator.active ? "Disable" : "Enable";
+    const disabled = operators.mutation ? " disabled" : "";
+    return `<tr><td>${esc(operator.operatorCode)}</td><td>${esc(operator.zoneCode || "—")}</td><td>${chip(operator.active ? "Active" : "Inactive", operator.active ? "" : "na")}</td><td><button class="op-status" type="button" data-operator-code="${esc(operator.operatorCode)}" data-operator-active="${operator.active ? "true" : "false"}"${disabled}>${action}</button></td></tr>`;
+  }).join("");
+  return `<div class="t-wrap"><table><thead><tr><th>Operator code</th><th>Zone code</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function operatorsPage() {
+  const saving = Boolean(operators.mutation);
+  return `<section class="panel op-viewer" id="operators-viewer"><div class="p-head"><div><h2>Operators</h2><p class="op-subtitle">Manage the operator registry used by inventory events and periodic route refresh.</p></div><span class="tag na">registry</span></div><form class="op-form" id="operator-create-form" autocomplete="off"><label>Operator code<input id="operator-code" name="operatorCode" value="${esc(operators.code)}" maxlength="128" required${saving ? " disabled" : ""}></label><label>Zone code<input id="operator-zone-code" name="zoneCode" value="${esc(operators.zoneCode)}" maxlength="128" placeholder="e.g. r3bits" required${saving ? " disabled" : ""}></label><button type="submit"${saving ? " disabled" : ""}>Save operator</button></form><p class="note">Zone codes must be supported Orionmax zones. Saving an existing operator updates its zone while preserving its active status; disabling does not delete the record.</p><div id="operators-result">${operatorsResult()}</div></section>`;
+}
+
+function bindOperators() {
+  document.getElementById("operator-create-form")?.addEventListener("submit", (event) => { event.preventDefault(); createOperator(); });
+  document.getElementById("operator-code")?.addEventListener("input", (event) => { operators.code = event.target.value; });
+  document.getElementById("operator-zone-code")?.addEventListener("input", (event) => { operators.zoneCode = event.target.value; });
+  document.querySelectorAll("[data-operator-code]").forEach((button) => button.addEventListener("click", () => setOperatorActive(button.dataset.operatorCode, button.dataset.operatorActive !== "true")));
+}
+
+function paintOperators() {
+  const target = document.getElementById("operators-viewer");
+  if (target) {
+    target.outerHTML = operatorsPage();
+    bindOperators();
+  }
+}
+
+async function loadOperators() {
+  operatorsController?.abort();
+  const activeController = new AbortController();
+  operatorsController = activeController;
+  operators.state = "loading";
+  operators.message = "";
+  paintOperators();
+  try {
+    operators.items = await adminPortalService.operators({ signal: activeController.signal });
+    if (operatorsController !== activeController) return;
+    operators.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || operatorsController !== activeController) return;
+    operators.state = "error";
+    operators.message = error.message || "Unable to load operators.";
+  } finally {
+    if (operatorsController === activeController) {
+      operatorsController = undefined;
+      paintOperators();
+    }
+  }
+}
+
+async function createOperator() {
+  operators.code = document.getElementById("operator-code")?.value.trim() || "";
+  operators.zoneCode = document.getElementById("operator-zone-code")?.value.trim() || "";
+  if (!operators.code || !operators.zoneCode) {
+    operators.state = "error";
+    operators.message = "Operator code and zone code are required.";
+    paintOperators();
+    return;
+  }
+  operators.mutation = "create";
+  paintOperators();
+  try {
+    await adminPortalService.createOperator(operators.code, operators.zoneCode);
+    operators.code = "";
+    operators.zoneCode = "";
+    await loadOperators();
+  } catch (error) {
+    operators.state = "error";
+    operators.message = error.message || "Unable to create operator.";
+  } finally {
+    operators.mutation = "";
+    paintOperators();
+  }
+}
+
+async function setOperatorActive(operatorCode, active) {
+  operators.mutation = operatorCode;
+  paintOperators();
+  try {
+    await adminPortalService.setOperatorActive(operatorCode, active);
+    await loadOperators();
+  } catch (error) {
+    operators.state = "error";
+    operators.message = error.message || "Unable to update operator.";
+  } finally {
+    operators.mutation = "";
+    paintOperators();
+  }
+}
+
 const routeMetadata = { operator: "", travel: "", from: "", to: "", state: "idle", message: "", items: [] };
 const ROUTE_METADATA_FIELDS = [["metadata-operator", "operator"], ["metadata-travel", "travel"], ["metadata-from", "from"], ["metadata-to", "to"]];
 let routeMetadataController;
@@ -383,6 +482,7 @@ function page(current) {
   if (current === "trip-analyzer") return `<section class="panel"><div class="p-head"><h2>Trip Analyzer / Trip History</h2><span class="tag na">bounded scan · queue_metrix</span></div>${tripAnalyzer()}</section>`;
   if (current === "dragonfly") return cacheViewerPage();
   if (current === "cassandra") return routeMetadataPage();
+  if (current === "operators") return operatorsPage();
   if (current === "reports") return `<section class="panel"><div class="p-head"><h2>Reports</h2><a href="${ADMIN_ENDPOINTS.reports}">Open Reports</a></div><div class="na-box"><div>Detailed Queue Metrics reporting and filtering remain available in the existing reports area.</div></div></section>`;
   return dashboard();
 }
@@ -394,6 +494,7 @@ function bind() {
   document.getElementById("burger")?.addEventListener("click", () => document.querySelector(".side")?.scrollIntoView({ behavior: "smooth" }));
   if (route() === "dragonfly") bindCacheViewer();
   if (route() === "cassandra") bindRouteMetadata();
+  if (route() === "operators") bindOperators();
 }
 
 async function load() {
@@ -406,6 +507,7 @@ async function load() {
     mount.innerHTML = shell(current, page(current));
     bind();
     if (current === "dragonfly") loadCacheViewer(true);
+    if (current === "operators") loadOperators();
   } catch (error) {
     if (error.name === "AbortError") return;
     mount.innerHTML = shell(current, '<div class="err">Unable to load the protected admin snapshot. Check the session and refresh to retry.</div>');

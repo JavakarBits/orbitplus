@@ -55,6 +55,34 @@
       }
     },
     {
+      "name": "GET Operators (protected)",
+      "request": {
+        "method": "GET",
+        "description": "Lists the active and inactive operator registry entries. Requires an authenticated protected UI session.",
+        "url": "http://localhost:8082/orbitplus/api/admin/operators"
+      }
+    },
+    {
+      "name": "POST Operator (protected)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"operatorCode\": \"demo-operator\",\n  \"zoneCode\": \"r3bits\"\n}", "options": { "raw": { "language": "json" } } },
+        "description": "Creates an active operator or updates the zone code for an existing operator while preserving its current active state. zoneCode must be a supported Orionmax zone.",
+        "url": "http://localhost:8082/orbitplus/api/admin/operators"
+      }
+    },
+    {
+      "name": "PATCH Operator Status (protected)",
+      "request": {
+        "method": "PATCH",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"active\": false\n}", "options": { "raw": { "language": "json" } } },
+        "description": "Replace demo-operator with an existing operator code. Disabling moves the registry row to the inactive partition; it does not delete the operator.",
+        "url": "http://localhost:8082/orbitplus/api/admin/operators/demo-operator"
+      }
+    },
+    {
       "name": "GET Search (persisted)",
       "request": {
         "method": "GET",
