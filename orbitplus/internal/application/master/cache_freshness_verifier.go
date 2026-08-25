@@ -42,8 +42,8 @@ type VerifyResult struct {
 // load onto Bits.
 type CacheFreshnessVerifier struct {
 	fetcher BitsTripDetailsFetcher
-	reader  *TripDetailsReadService
-	writer  CacheDifferenceWriter
+	reader   *TripDetailsReadService
+	writer   CacheDifferenceWriter
 	// repairer overwrites the cached copy with the live copy after a difference.
 	// It is the same storage path the Worker callback uses, so the repaired
 	// documents are split and indexed identically.
@@ -98,6 +98,15 @@ func (verifier *CacheFreshnessVerifier) Verify(ctx context.Context, lookup BitsL
 		verifier.logger.Printf("live verification rejected: remote_addr=%q action=%s operator=%q outcome=BUSY",
 			remoteAddress, lookup.Action, lookup.OperatorCode)
 		return VerifyResult{}, ErrVerificationBusy
+	}
+
+	// Credentials arrive on the read route from the caller; the handler rejects
+	// a live request before it reaches here when either half is absent.
+	if !lookup.HasCredential() {
+		<-verifier.slots
+		verifier.logger.Printf("live verification completed: remote_addr=%q action=%s operator=%q outcome=%s",
+			remoteAddress, lookup.Action, lookup.OperatorCode, domain.OutcomeCredentialUnavailable)
+		return VerifyResult{Outcome: domain.OutcomeCredentialUnavailable}, ErrOperatorCredentialUnavailable
 	}
 
 	result, fetchErr := verifier.fetcher.FetchTripDetails(ctx, lookup)

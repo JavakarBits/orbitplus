@@ -28,24 +28,37 @@ func NewTripDetailsReadHandler(service *master.TripDetailsReadService, verifier 
 
 func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter, request *http.Request) {
 	cacheFlag, flagErr := parseCacheFlag(request.URL.RawQuery)
+	zoneCode, zoneErr := parseZoneCode(request.URL.RawQuery)
 	lookup := master.RouteLookup{
 		OperatorCode: request.PathValue("operatorCode"),
 		FromCode:     request.PathValue("fromCode"),
 		ToCode:       request.PathValue("toCode"),
 		TripDate:     request.PathValue("tripDate"),
 	}
-	// One combined rejection so the response cannot depend on which of the two
+	// One combined rejection so the response cannot depend on which of the
 	// validations happens to run first.
 	if flagErr != nil || !master.ValidSearchLookup(lookup) {
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
 		return
 	}
 	if cacheFlag == cacheFlagFromLive {
+		username := request.PathValue("username")
+		apiToken := request.PathValue("apiToken")
+		baseURL, resolved := master.ZoneBitsBaseURL(zoneCode)
+		if zoneErr != nil || !resolved || !master.ValidLiveSearchLookup(lookup, username, apiToken) {
+			// An unknown or absent zone, or missing path credentials, is the
+			// caller's error, not an upstream failure.
+			handler.logger.Printf("live read rejected: action=SEARCH operator=%q reason=invalid_live_request",
+				lookup.OperatorCode)
+			writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
+			return
+		}
 		handler.serveLive(response, request, master.BitsLookup{
 			Action:       master.BitsActionSearch,
 			OperatorCode: lookup.OperatorCode,
-			Username:     request.PathValue("username"),
-			APIToken:     request.PathValue("apiToken"),
+			BaseURL:      baseURL,
+			Username:     username,
+			APIToken:     apiToken,
 			FromCode:     lookup.FromCode,
 			ToCode:       lookup.ToCode,
 			TravelDate:   lookup.TripDate,
@@ -66,6 +79,7 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 
 func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter, request *http.Request) {
 	cacheFlag, flagErr := parseCacheFlag(request.URL.RawQuery)
+	zoneCode, zoneErr := parseZoneCode(request.URL.RawQuery)
 	lookup := master.RouteLookup{
 		OperatorCode: request.PathValue("operatorCode"),
 		TripCode:     request.PathValue("tripCode"),
@@ -73,18 +87,28 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 		ToCode:       request.PathValue("toStationCode"),
 		TripDate:     request.PathValue("travelDate"),
 	}
-	// One combined rejection so the response cannot depend on which of the two
+	// One combined rejection so the response cannot depend on which of the
 	// validations happens to run first.
 	if flagErr != nil || !master.ValidBusMapLookup(lookup) {
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
 		return
 	}
 	if cacheFlag == cacheFlagFromLive {
+		username := request.PathValue("username")
+		apiToken := request.PathValue("apiToken")
+		baseURL, resolved := master.ZoneBitsBaseURL(zoneCode)
+		if zoneErr != nil || !resolved || !master.ValidLiveBusMapLookup(lookup, username, apiToken) {
+			handler.logger.Printf("live read rejected: action=BUSMAP operator=%q reason=invalid_live_request",
+				lookup.OperatorCode)
+			writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
+			return
+		}
 		handler.serveLive(response, request, master.BitsLookup{
 			Action:       master.BitsActionBusMap,
 			OperatorCode: lookup.OperatorCode,
-			Username:     request.PathValue("username"),
-			APIToken:     request.PathValue("apiToken"),
+			BaseURL:      baseURL,
+			Username:     username,
+			APIToken:     apiToken,
 			TripCode:     lookup.TripCode,
 			FromCode:     lookup.FromCode,
 			ToCode:       lookup.ToCode,
@@ -122,6 +146,8 @@ func (handler *TripDetailsReadHandler) serveLive(response http.ResponseWriter, r
 	switch {
 	case errors.Is(err, master.ErrVerificationBusy):
 		writeJSONStatus(response, http.StatusTooManyRequests, 0, "Live verification busy")
+	case errors.Is(err, master.ErrOperatorCredentialUnavailable):
+		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
 	case errors.Is(err, master.ErrLiveSourceRejected):
 		// Bits is healthy and answered; it just has nothing for this lookup,
 		// whether because the date has passed or the operator does not serve the

@@ -28,29 +28,29 @@ const maxBitsResponseBytes int64 = 8 << 20
 
 // BitsTripDetailsClient fetches a live TripDetails copy from Bits.
 //
-// The adapter holds no credentials. They arrive on each BitsLookup, because the
-// read route lets every request authenticate as a different operator, and they
-// appear in exactly one place: the escaped path segments of an outbound
-// request. They are never logged and never formatted into an error.
+// The adapter holds neither an endpoint nor credentials. Both arrive on each
+// BitsLookup, because operators live in different zones and authenticate as
+// different principals, so one process-wide endpoint would query the wrong host
+// for most operators. Credentials appear in exactly one place: the escaped path
+// segments of an outbound request. They are never logged and never formatted
+// into an error.
 type BitsTripDetailsClient struct {
 	client      *http.Client
-	baseURL     *url.URL
+	environment master.AppEnvironment
 	maxBodySize int64
 	logger      *log.Logger
 }
 
-// NewBitsTripDetailsClient constructs the adapter from validated configuration.
-func NewBitsTripDetailsClient(httpClient *http.Client, config master.VerificationConfig) (*BitsTripDetailsClient, error) {
+// NewBitsTripDetailsClient constructs the adapter. The environment decides
+// whether a plaintext zone endpoint is acceptable, so the check happens per
+// request against the zone URL rather than once against configuration.
+func NewBitsTripDetailsClient(httpClient *http.Client, environment master.AppEnvironment) (*BitsTripDetailsClient, error) {
 	if httpClient == nil {
 		return nil, fmt.Errorf("Bits HTTP client is required")
 	}
-	baseURL, err := url.Parse(config.BitsBaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse Bits base URL: %w", err)
-	}
 	return &BitsTripDetailsClient{
 		client:      httpClient,
-		baseURL:     baseURL,
+		environment: environment,
 		maxBodySize: maxBitsResponseBytes,
 		logger:      log.Default(),
 	}, nil
@@ -65,6 +65,9 @@ func (client *BitsTripDetailsClient) FetchTripDetails(ctx context.Context, looku
 	// with an unrelated error.
 	if !lookup.HasCredential() {
 		return master.BitsResult{}, client.fail(lookup, master.BitsFailureMissingCredential, "credential absent")
+	}
+	if err := master.ValidateBitsURL(lookup.BaseURL, client.environment); err != nil {
+		return master.BitsResult{}, client.fail(lookup, master.BitsFailureZoneEndpoint, "zone endpoint rejected")
 	}
 	requestURL, err := client.requestURL(lookup)
 	if err != nil {
@@ -86,7 +89,7 @@ func (client *BitsTripDetailsClient) FetchTripDetails(ctx context.Context, looku
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		client.logger.Printf("Bits live fetch non-success: action=%s operator=%q host=%q status=%d",
-			lookup.Action, lookup.OperatorCode, client.baseURL.Host, response.StatusCode)
+			lookup.Action, lookup.OperatorCode, lookupHost(lookup), response.StatusCode)
 		return master.BitsResult{}, client.fail(lookup, master.BitsFailureStatus, "non-success status")
 	}
 
@@ -116,7 +119,7 @@ func (client *BitsTripDetailsClient) FetchTripDetails(ctx context.Context, looku
 	// reliable discriminator available.
 	if code, description, rejected := bitsRejection(envelope); rejected {
 		client.logger.Printf("Bits live fetch rejected: action=%s operator=%q host=%q errorCode=%s errorDesc=%s",
-			lookup.Action, lookup.OperatorCode, client.baseURL.Host, code, description)
+			lookup.Action, lookup.OperatorCode, lookupHost(lookup), code, description)
 		return master.BitsResult{}, fmt.Errorf("%w: %s", master.ErrLiveSourceRejected, code)
 	}
 
@@ -128,7 +131,7 @@ func (client *BitsTripDetailsClient) FetchTripDetails(ctx context.Context, looku
 		// returned, so the cause is recoverable without the body reaching a
 		// caller.
 		client.logger.Printf("Bits live fetch envelope carries no data member: action=%s operator=%q host=%q %s",
-			lookup.Action, lookup.OperatorCode, client.baseURL.Host, describeEnvelope(envelope))
+			lookup.Action, lookup.OperatorCode, lookupHost(lookup), describeEnvelope(envelope))
 		return master.BitsResult{}, client.fail(lookup, master.BitsFailureNoDataMember, "no data member")
 	}
 	return client.dataResult(lookup, raw)
@@ -244,7 +247,11 @@ func (client *BitsTripDetailsClient) requestURL(lookup master.BitsLookup) (*url.
 		return nil, client.fail(lookup, master.BitsFailureBadDataKind, "unsupported action")
 	}
 
-	requestURL := *client.baseURL
+	parsed, err := url.Parse(lookup.BaseURL)
+	if err != nil {
+		return nil, client.fail(lookup, master.BitsFailureZoneEndpoint, "zone endpoint is unparseable")
+	}
+	requestURL := *parsed
 	requestURL.User = nil
 	requestURL.RawQuery = ""
 	requestURL.Fragment = ""
@@ -257,8 +264,8 @@ func (client *BitsTripDetailsClient) requestURL(lookup master.BitsLookup) (*url.
 		escaped[index] = url.PathEscape(segment)
 	}
 	requestURL.RawPath = escapedBase + "/" + strings.Join(escaped, "/")
-	decoded, err := url.PathUnescape(requestURL.RawPath)
-	if err != nil {
+	decoded, unescapeErr := url.PathUnescape(requestURL.RawPath)
+	if unescapeErr != nil {
 		return nil, client.fail(lookup, master.BitsFailureTransport, "build path")
 	}
 	requestURL.Path = decoded
@@ -266,10 +273,23 @@ func (client *BitsTripDetailsClient) requestURL(lookup master.BitsLookup) (*url.
 }
 
 // fail logs a credential-free line and returns the wrapped sentinel.
+//
+// The host is taken from the lookup's own endpoint, so the line names the zone
+// that actually failed rather than a process-wide default.
 func (client *BitsTripDetailsClient) fail(lookup master.BitsLookup, reason, detail string) error {
 	client.logger.Printf("Bits live fetch failed: action=%s operator=%q host=%q reason=%s detail=%q",
-		lookup.Action, lookup.OperatorCode, client.baseURL.Host, reason, detail)
+		lookup.Action, lookup.OperatorCode, lookupHost(lookup), reason, detail)
 	return fmt.Errorf("%w: %s", master.ErrLiveSourceUnavailable, reason)
+}
+
+// lookupHost reports the lookup's endpoint host for a log line, never its path,
+// so no credential-bearing segment can be logged.
+func lookupHost(lookup master.BitsLookup) string {
+	parsed, err := url.Parse(lookup.BaseURL)
+	if err != nil || parsed.Host == "" {
+		return "unresolved"
+	}
+	return parsed.Host
 }
 
 var _ master.BitsTripDetailsFetcher = (*BitsTripDetailsClient)(nil)

@@ -30,3 +30,13 @@ func zoneURLFor(zoneCode string) (string, bool) {
 	}
 	return zoneURLByCode[zoneCode], true
 }
+
+// ZoneBitsBaseURL resolves the Bits endpoint a zone code addresses.
+//
+// A live read names its zone rather than inheriting one endpoint from
+// configuration, because operators are spread across zones and a single
+// configured host would silently query the wrong one. This is the same table
+// the Orionmax inventory path uses, so both agree on where a zone lives.
+func ZoneBitsBaseURL(zoneCode string) (string, bool) {
+	return zoneURLFor(zoneCode)
+}

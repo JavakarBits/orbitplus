@@ -10,7 +10,7 @@ import (
 	"orbitplusmaster/internal/domain"
 )
 
-const cacheFreshnessDifferenceTable = "cache_freshness_difference"
+const cacheFreshnessDifferenceTable = "busmap_data_analytics"
 
 // CacheFreshnessDifferenceRepository persists cache-versus-Bits differences.
 //

@@ -123,12 +123,12 @@ func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.
 		return nil, noClose
 	}
 	if config.Verification == nil {
-		log.Print("live verification disabled: BITS_BASE_URL is not set")
+		log.Print("live verification disabled: Cassandra/storage configuration is required")
 		return nil, noClose
 	}
 	bitsClient, err := bits.NewBitsTripDetailsClient(
 		&http.Client{Timeout: config.Verification.HTTPTimeout},
-		*config.Verification,
+		config.AppEnvironment,
 	)
 	if err != nil {
 		log.Printf("live verification disabled: %v", err)
@@ -155,14 +155,14 @@ func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.
 		}
 	}
 
-	verifier, err := master.NewCacheFreshnessVerifier(bitsClient, readService, differenceWriter, repairer,
-		config.Verification.MaxConcurrent, log.Default())
+	verifier, err := master.NewCacheFreshnessVerifier(bitsClient, readService, differenceWriter,
+		repairer, config.Verification.MaxConcurrent, log.Default())
 	if err != nil {
 		log.Printf("live verification disabled: %v", err)
 		closeWriter()
 		return nil, noClose
 	}
-	log.Printf("live verification enabled: max_concurrent=%d http_timeout=%s recording=%t repair=%t",
+	log.Printf("live verification enabled: max_concurrent=%d http_timeout=%s recording=%t repair=%t credentials=request",
 		config.Verification.MaxConcurrent, config.Verification.HTTPTimeout,
 		differenceWriter != nil, repairer != nil)
 	return verifier, closeWriter

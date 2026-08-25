@@ -118,6 +118,9 @@ CREATE TABLE IF NOT EXISTS periodic_refresh_routes (
 -- rather than with traffic. MATCH outcomes are not stored.
 --
 -- verification_outcome is one of DIFFERENT, CACHE_MISSING, SOURCE_UNAVAILABLE.
+-- SOURCE_REJECTED and CREDENTIAL_UNAVAILABLE are never stored: Bits refusing a
+-- lookup and Orbit failing to supply a credential both mean no comparison
+-- happened, so there is nothing about cache freshness to record.
 --
 -- detected_on is the UTC calendar date and is part of the partition key so
 -- partitions stay bounded and every read restricts a partition key. Never add a
@@ -127,15 +130,14 @@ CREATE TABLE IF NOT EXISTS periodic_refresh_routes (
 -- Clustering by detected_at DESC means the report reads newest first without
 -- sorting in application code.
 --
--- NOT YET WRITTEN TO. Creating it now is harmless and settles the column set,
--- which matters because only primary key columns can be renamed later.
+-- Holds both SEARCH and BUSMAP rows; action_type distinguishes them.
 -- ---------------------------------------------------------------------------
 
 -- The row is a summary, not an archive. Full before-and-after payloads are
 -- deliberately not stored: they are large, Bits can be asked again, and the
 -- cache is repaired immediately, so a stored snapshot would describe a state
 -- that no longer exists. difference_paths is what makes a row actionable.
-CREATE TABLE IF NOT EXISTS cache_freshness_difference (
+CREATE TABLE IF NOT EXISTS busmap_data_analytics (
     operator_code text,
     detected_on text,
     detected_at timestamp,
@@ -175,4 +177,21 @@ CREATE TABLE IF NOT EXISTS cache_freshness_difference (
 -- so confirm no external consumer depends on it first:
 --
 --   DROP TABLE IF EXISTS trip_details_metadata_by_stage;
+--
+-- Renamed schema: cache_freshness_difference became busmap_data_analytics.
+-- Cassandra cannot rename a table, so the new one is created above and the old
+-- one is dropped once its rows are no longer wanted. It only ever held
+-- diagnostic summaries, so there is usually nothing to migrate:
+--
+--   DROP TABLE IF EXISTS cache_freshness_difference;
+--
+-- CAUTION: every statement here is CREATE TABLE IF NOT EXISTS, which silently
+-- does nothing when a table already exists with an older column set. Re-running
+-- this script therefore does NOT reconcile a table that has drifted. After
+-- changing any column above, apply the matching ALTER by hand and verify with:
+--
+--   DESCRIBE TABLE <keyspace>.<table>;
+--
+-- A missing column shows up only as a write failure in the service log, because
+-- the difference write is a background operation that never affects a response.
 -- ---------------------------------------------------------------------------

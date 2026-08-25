@@ -41,19 +41,26 @@ const (
 	BitsFailureNoDataMember      = "no_data_member"
 	BitsFailureBadDataKind       = "bad_data_kind"
 	BitsFailureMissingCredential = "missing_credential"
+	BitsFailureZoneEndpoint      = "zone_endpoint"
 )
+
+// ErrOperatorCredentialUnavailable reports that the live request did not carry
+// both path credentials, so no outbound Bits fetch was attempted.
+var ErrOperatorCredentialUnavailable = errors.New("operator credential unavailable")
 
 // BitsLookup identifies one live fetch. Action is BitsActionSearch or
 // BitsActionBusMap; TripCode is used by busmap only.
 //
-// Username and APIToken are the credentials the caller supplied on the read
-// route, carried per lookup rather than held on the adapter because each
-// request may authenticate to Bits as a different operator. They are used to
-// build one outbound path and nothing else: no log line, error, response body,
-// difference row, or cache key may ever contain them.
+// BaseURL is the zone endpoint the request named, and Username and APIToken are
+// the credentials bound from the read route. All three are carried per lookup
+// rather than held on the adapter, because operators live in different zones and
+// authenticate as different principals. The credentials are used to build one
+// outbound path and nothing else: no log line, error, response body, difference
+// row, or cache key may ever contain them.
 type BitsLookup struct {
 	Action       string
 	OperatorCode string
+	BaseURL      string
 	Username     string
 	APIToken     string
 	TripCode     string
