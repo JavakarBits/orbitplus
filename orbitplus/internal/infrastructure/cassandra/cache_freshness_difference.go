@@ -95,6 +95,38 @@ func (repository *CacheFreshnessDifferenceRepository) ListDifferences(ctx contex
 	return records, nil
 }
 
+// List reads a bounded sample of recorded differences for the report UI.
+//
+// It is a range scan with a LIMIT and no WHERE, so it needs no ALLOW FILTERING:
+// rows come back in token order, not time order, exactly like the queue_metrix
+// report. The application layer sorts the returned sample newest-first, which
+// is why this is capped rather than a full-table read.
+func (repository *CacheFreshnessDifferenceRepository) List(ctx context.Context, limit int) ([]domain.RecordedDifference, error) {
+	query := `SELECT operator_code, detected_on, detected_at, difference_id, action_type, trip_code,
+		trip_stage_code, from_code, to_code, trip_date, verification_outcome, difference_count,
+		difference_paths, cache_repaired FROM ` + cacheFreshnessDifferenceTable + ` LIMIT ?`
+	iter := repository.session.Query(query, limit).PageSize(limit).WithContext(ctx).Iter()
+
+	records := make([]domain.RecordedDifference, 0, limit)
+	for {
+		var record domain.RecordedDifference
+		var differenceID gocql.UUID
+		var outcome string
+		if !iter.Scan(&record.OperatorCode, &record.DetectedOn, &record.DetectedAt, &differenceID,
+			&record.ActionType, &record.TripCode, &record.TripStageCode, &record.FromCode, &record.ToCode,
+			&record.TripDate, &outcome, &record.DifferenceCount, &record.DifferencePaths, &record.CacheRepaired) {
+			break
+		}
+		record.DifferenceID = differenceID.String()
+		record.VerificationOutcome = domain.VerificationOutcome(outcome)
+		records = append(records, record)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("list busmap data analytics: %w", err)
+	}
+	return records, nil
+}
+
 // Close closes the Cassandra connection.
 func (repository *CacheFreshnessDifferenceRepository) Close() {
 	repository.session.Close()

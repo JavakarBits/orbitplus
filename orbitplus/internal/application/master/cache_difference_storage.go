@@ -13,6 +13,39 @@ import (
 // produces a bounded row rather than an unbounded one.
 const maxStoredPaths = 200
 
+// maxStoredValueChars bounds each rendered side of a difference. A value
+// mismatch is usually a scalar, but a MISSING entry's value is a whole entry,
+// so without a cap one difference could carry an entire document into the row.
+const maxStoredValueChars = 120
+
+// formatDifferencePath renders one difference as "KIND path: cache → bits", so
+// the row shows what changed rather than only where. The kind decides which
+// sides are meaningful: a value mismatch has both, a missing entry has one.
+func formatDifferencePath(difference domain.DifferenceEntry) string {
+	head := string(difference.Kind) + " " + difference.Path
+	switch difference.Kind {
+	case domain.DifferenceMissingInCache:
+		return head + ": " + truncateValue(difference.BitsValue)
+	case domain.DifferenceMissingInBits:
+		return head + ": " + truncateValue(difference.CacheValue)
+	default:
+		return head + ": " + truncateValue(difference.CacheValue) + " \u2192 " + truncateValue(difference.BitsValue)
+	}
+}
+
+// truncateValue bounds one rendered value and marks where it was cut, so a long
+// value is still recognisable without bloating the row.
+func truncateValue(value string) string {
+	if value == "" {
+		return "∅"
+	}
+	runes := []rune(value)
+	if len(runes) <= maxStoredValueChars {
+		return value
+	}
+	return string(runes[:maxStoredValueChars]) + "…"
+}
+
 // CacheDifferenceWriter persists one non-matching verification result.
 type CacheDifferenceWriter interface {
 	SaveDifference(ctx context.Context, record domain.RecordedDifference) error
@@ -32,7 +65,7 @@ func buildRecordedDifference(
 		if len(paths) >= maxStoredPaths {
 			break
 		}
-		paths = append(paths, string(difference.Kind)+" "+difference.Path)
+		paths = append(paths, formatDifferencePath(difference))
 	}
 
 	record := domain.RecordedDifference{

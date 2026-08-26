@@ -28,6 +28,10 @@ type masterServices struct {
 	persistence *master.TripDetailsStorage
 	metadata    *cassandra.TripDetailsMetadataRepository
 	metrix      *cassandra.QueueMetrixRepository
+	// differences is the busmap_data_analytics store, shared as the live-path
+	// difference writer and the report reader. Nil when Cassandra could not be
+	// reached for it, which disables recording and the report but not reads.
+	differences *cassandra.CacheFreshnessDifferenceRepository
 	close       func()
 }
 
@@ -100,12 +104,21 @@ func main() {
 	tablesService := master.NewTablesService(services.metadata)
 	uiAccessAuth := masterhttp.NewUIAccessAuth(config.UIAccessToken, config.AppEnvironment == master.Production)
 
-	freshnessVerifier, closeDifferenceWriter := newCacheFreshnessVerifier(config, services.read, services.persistence)
-	defer closeDifferenceWriter()
+	// The difference store is a nil interface unless the repository connected,
+	// so the verifier still serves live reads with recording simply disabled.
+	var differenceWriter master.CacheDifferenceWriter
+	var busmapAnalyticsReader master.BusmapAnalyticsReader
+	if services.differences != nil {
+		differenceWriter = services.differences
+		busmapAnalyticsReader = services.differences
+	}
+	busmapAnalyticsService := master.NewBusmapAnalyticsService(busmapAnalyticsReader)
+
+	freshnessVerifier := newCacheFreshnessVerifier(config, services.read, services.persistence, differenceWriter)
 
 	router := masterhttp.NewRouter(startedAt, services.tripDetails, orionmaxInventoryChangeService, services.read,
 		services.cache, rabbitMQManagementReader, queueJobsService, tripFreshnessService, tripHistoryService,
-		tablesService, operatorRegistry, uiAccessAuth, freshnessVerifier)
+		tablesService, operatorRegistry, busmapAnalyticsService, uiAccessAuth, freshnessVerifier)
 	server := &http.Server{Addr: config.Address(), Handler: router}
 	log.Printf("orbitplusmaster listening on %s", config.Address())
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -116,15 +129,14 @@ func main() {
 // newCacheFreshnessVerifier builds the live Bits verification path when it is
 // configured. A misconfigured or absent group disables only this feature: the
 // service must keep serving cached reads, so nothing here is fatal.
-func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.TripDetailsReadService, repairer *master.TripDetailsStorage) (*master.CacheFreshnessVerifier, func()) {
-	noClose := func() {}
+func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.TripDetailsReadService, repairer *master.TripDetailsStorage, differenceWriter master.CacheDifferenceWriter) *master.CacheFreshnessVerifier {
 	if config.VerificationError != nil {
 		log.Printf("live verification disabled: %v", config.VerificationError)
-		return nil, noClose
+		return nil
 	}
 	if config.Verification == nil {
 		log.Print("live verification disabled: Cassandra/storage configuration is required")
-		return nil, noClose
+		return nil
 	}
 	bitsClient, err := bits.NewBitsTripDetailsClient(
 		&http.Client{Timeout: config.Verification.HTTPTimeout},
@@ -132,40 +144,19 @@ func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.
 	)
 	if err != nil {
 		log.Printf("live verification disabled: %v", err)
-		return nil, noClose
-	}
-
-	// The difference store is optional: without it the live copy is still
-	// served, differences just are not recorded.
-	var differenceWriter master.CacheDifferenceWriter
-	closeWriter := noClose
-	if config.Storage != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), config.Storage.Cassandra.Timeout)
-		defer cancel()
-		repository, repositoryErr := cassandra.NewCacheFreshnessDifferenceRepository(ctx, cassandra.Config{
-			Hosts: config.Storage.Cassandra.Hosts, Port: config.Storage.Cassandra.Port,
-			Keyspace: config.Storage.Cassandra.Keyspace, Username: config.Storage.Cassandra.Username,
-			Password: config.Storage.Cassandra.Password, Timeout: config.Storage.Cassandra.Timeout,
-		})
-		if repositoryErr != nil {
-			log.Printf("cache difference recording disabled: %v", repositoryErr)
-		} else {
-			differenceWriter = repository
-			closeWriter = repository.Close
-		}
+		return nil
 	}
 
 	verifier, err := master.NewCacheFreshnessVerifier(bitsClient, readService, differenceWriter,
 		repairer, config.Verification.MaxConcurrent, log.Default())
 	if err != nil {
 		log.Printf("live verification disabled: %v", err)
-		closeWriter()
-		return nil, noClose
+		return nil
 	}
 	log.Printf("live verification enabled: max_concurrent=%d http_timeout=%s recording=%t repair=%t credentials=request",
 		config.Verification.MaxConcurrent, config.Verification.HTTPTimeout,
 		differenceWriter != nil, repairer != nil)
-	return verifier, closeWriter
+	return verifier
 }
 
 func newMasterServices(config master.RuntimeConfig) (masterServices, error) {
@@ -199,6 +190,16 @@ func newMasterServices(config master.RuntimeConfig) (masterServices, error) {
 		return masterServices{}, err
 	}
 	persistence := master.NewTripDetailsStorageWithLogger(cache, metadata, log.Default())
+
+	// The difference store is optional: a failure here disables live-difference
+	// recording and the analytics report, but must not stop cached reads.
+	var differences *cassandra.CacheFreshnessDifferenceRepository
+	if repository, repositoryErr := cassandra.NewCacheFreshnessDifferenceRepository(ctx, cassandraConfig); repositoryErr != nil {
+		log.Printf("busmap data analytics disabled: %v", repositoryErr)
+	} else {
+		differences = repository
+	}
+
 	return masterServices{
 		tripDetails: master.NewTripDetailsServiceWithStorageAndMetrix(log.Default(), persistence, metrix),
 		read:        master.NewTripDetailsReadService(cache, metadata, log.Default()),
@@ -206,7 +207,11 @@ func newMasterServices(config master.RuntimeConfig) (masterServices, error) {
 		persistence: persistence,
 		metadata:    metadata,
 		metrix:      metrix,
+		differences: differences,
 		close: func() {
+			if differences != nil {
+				differences.Close()
+			}
 			metrix.Close()
 			metadata.Close()
 			_ = cache.Close()

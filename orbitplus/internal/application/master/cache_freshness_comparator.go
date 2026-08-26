@@ -51,6 +51,25 @@ type canonicalObject struct {
 	values map[string]canonicalValue
 }
 
+// isEmptyValue reports whether a canonical value carries no content: JSON null,
+// an empty array, or an empty object. The two producers disagree on how they
+// spell "nothing" here, one omitting a field or writing null where the other
+// writes [], so treating all three as equal keeps that spelling difference from
+// registering as stale data. A non-empty array or object is real content and is
+// never empty.
+func isEmptyValue(value canonicalValue) bool {
+	switch typed := value.(type) {
+	case canonicalNull:
+		return true
+	case canonicalArray:
+		return len(typed) == 0
+	case canonicalObject:
+		return len(typed.names) == 0
+	default:
+		return false
+	}
+}
+
 func (canonicalNull) render() string          { return "null" }
 func (value canonicalBool) render() string    { return strconv.FormatBool(bool(value)) }
 func (value canonicalString) render() string  { return strconv.Quote(string(value)) }
@@ -170,6 +189,14 @@ func (collector *differenceCollector) add(path string, kind domain.DifferenceKin
 // depth first. Two runs over the same inputs therefore produce the same paths
 // in the same order, which keeps stored rows and test failures reproducible.
 func (collector *differenceCollector) walk(path string, cache, bits canonicalValue) {
+	// null, an empty array, and an empty object all mean "nothing here", so two
+	// empties are equal regardless of which form each side used. This is checked
+	// before the kind-specific branches so an empty object versus an empty array
+	// does not fall through to the different-kinds mismatch below.
+	if isEmptyValue(cache) && isEmptyValue(bits) {
+		return
+	}
+
 	cacheObject, cacheIsObject := cache.(canonicalObject)
 	bitsObject, bitsIsObject := bits.(canonicalObject)
 	if cacheIsObject && bitsIsObject {
@@ -180,9 +207,15 @@ func (collector *differenceCollector) walk(path string, cache, bits canonicalVal
 			case inCache && inBits:
 				collector.walk(appendMember(path, name), cacheMember, bitsMember)
 			case inCache:
-				collector.add(appendMember(path, name), domain.DifferenceValueMismatch, cacheMember.render(), "null")
+				// Present on one side only is a difference unless that side is
+				// itself empty, which equals the other side's absence.
+				if !isEmptyValue(cacheMember) {
+					collector.add(appendMember(path, name), domain.DifferenceValueMismatch, cacheMember.render(), "null")
+				}
 			default:
-				collector.add(appendMember(path, name), domain.DifferenceValueMismatch, "null", bitsMember.render())
+				if !isEmptyValue(bitsMember) {
+					collector.add(appendMember(path, name), domain.DifferenceValueMismatch, "null", bitsMember.render())
+				}
 			}
 		}
 		return
@@ -201,9 +234,13 @@ func (collector *differenceCollector) walk(path string, cache, bits canonicalVal
 			case index < len(cacheArray) && index < len(bitsArray):
 				collector.walk(indexPath, cacheArray[index], bitsArray[index])
 			case index < len(cacheArray):
-				collector.add(indexPath, domain.DifferenceValueMismatch, cacheArray[index].render(), "null")
+				if !isEmptyValue(cacheArray[index]) {
+					collector.add(indexPath, domain.DifferenceValueMismatch, cacheArray[index].render(), "null")
+				}
 			default:
-				collector.add(indexPath, domain.DifferenceValueMismatch, "null", bitsArray[index].render())
+				if !isEmptyValue(bitsArray[index]) {
+					collector.add(indexPath, domain.DifferenceValueMismatch, "null", bitsArray[index].render())
+				}
 			}
 		}
 		return

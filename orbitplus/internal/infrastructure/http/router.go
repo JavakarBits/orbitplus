@@ -12,7 +12,7 @@ import (
 // freshnessVerifier may be nil, which leaves the cached read path untouched and
 // makes a Cache_Flag value of 0 report the live feature as unconfigured rather
 // than silently serving the cached copy as though it were live.
-func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, uiAccessAuth *UIAccessAuth, freshnessVerifier *master.CacheFreshnessVerifier) http.Handler {
+func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, busmapAnalyticsService *master.BusmapAnalyticsService, uiAccessAuth *UIAccessAuth, freshnessVerifier *master.CacheFreshnessVerifier) http.Handler {
 	readHandler := NewTripDetailsReadHandler(readService, freshnessVerifier)
 	queueJobsHandler := NewQueueJobsReportHandler(queueJobsService)
 	queueDashboardHandler := NewQueueDashboardHandler(queueJobsService)
@@ -23,6 +23,7 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	tablesHandler := NewTablesHandler(tablesService)
 	tripHistoryHandler := NewTripHistoryHandler(tripHistoryService)
 	operatorsHandler := NewOperatorsHandler(operatorRegistry)
+	busmapAnalyticsHandler := NewBusmapAnalyticsHandler(busmapAnalyticsService)
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /{$}", redirectTo("/orbitplus/login"))
@@ -45,12 +46,15 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	mux.Handle("GET /orbitplus/tables/schedule-metadata", uiAccessAuth.RequirePage(serveUIFile("ui/tables/schedule-metadata/index.html")))
 	mux.Handle("GET /orbitplus/reports/queue-jobs", uiAccessAuth.RequirePage(serveUIFile("ui/queue-jobs/index.html")))
 	mux.Handle("GET /orbitplus/reports/queue-jobs/", redirectTo("/orbitplus/reports/queue-jobs"))
+	mux.Handle("GET /orbitplus/reports/busmap-analytics", uiAccessAuth.RequirePage(serveUIFile("ui/busmap-analytics/index.html")))
+	mux.Handle("GET /orbitplus/reports/busmap-analytics/", redirectTo("/orbitplus/reports/busmap-analytics"))
 	mux.Handle("GET /orbitplus/cache", uiAccessAuth.RequirePage(serveUIFile("ui/cache/index.html")))
 	mux.Handle("GET /orbitplus/cache/", redirectTo("/orbitplus/cache"))
 	mux.Handle("GET /orbitplus/rabbitmq", uiAccessAuth.RequirePage(serveUIFile("ui/rabbitmq/index.html")))
 	mux.Handle("GET /orbitplus/rabbitmq/", redirectTo("/orbitplus/rabbitmq"))
 	mux.Handle("GET /orbitplus/styles.css", uiAccessAuth.RequireEnabled(serveUIFile("ui/styles.css")))
 	mux.Handle("GET /orbitplus/api/reports/queue-jobs", uiAccessAuth.RequireAPI(queueJobsHandler))
+	mux.Handle("GET /orbitplus/api/reports/busmap-analytics", uiAccessAuth.RequireAPI(busmapAnalyticsHandler))
 	mux.Handle("GET /orbitplus/api/dashboard/queue-summary", uiAccessAuth.RequireAPI(queueDashboardHandler))
 	mux.Handle("GET /orbitplus/api/dashboard/system-health", uiAccessAuth.RequireAPI(systemHealthHandler))
 	mux.Handle("GET /orbitplus/api/admin/dashboard", uiAccessAuth.RequireAPI(adminDashboardHandler))
