@@ -40,6 +40,14 @@ func NewTripDetailsReadService(content TripDetailsContentReader, metadata TripDe
 	return &TripDetailsReadService{content: content, metadata: metadata, logger: logger}
 }
 
+func ValidLiveSearchLookup(lookup RouteLookup, username, apiToken string) bool {
+	return ValidSearchLookup(lookup) && validLookupComponents(username, apiToken)
+}
+
+func ValidLiveBusMapLookup(lookup RouteLookup, username, apiToken string) bool {
+	return ValidBusMapLookup(lookup) && validLookupComponents(username, apiToken)
+}
+
 func ValidSearchLookup(lookup RouteLookup) bool {
 	return validLookupComponents(lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 }

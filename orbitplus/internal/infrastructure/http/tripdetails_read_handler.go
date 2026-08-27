@@ -13,23 +13,56 @@ import (
 // TripDetailsReadHandler serves persisted BusIQ Search and BUSMAP responses.
 type TripDetailsReadHandler struct {
 	service *master.TripDetailsReadService
-	logger  *log.Logger
+	// verifier is nil when live verification is unconfigured, in which case a
+	// Cache_Flag value of 0 reports the feature as unavailable rather than
+	// silently serving the cached copy.
+	verifier *master.CacheFreshnessVerifier
+	logger   *log.Logger
 }
 
 // NewTripDetailsReadHandler constructs a read handler using the process logger.
-func NewTripDetailsReadHandler(service *master.TripDetailsReadService) *TripDetailsReadHandler {
-	return &TripDetailsReadHandler{service: service, logger: log.Default()}
+// A nil verifier disables the live path and leaves the cached path untouched.
+func NewTripDetailsReadHandler(service *master.TripDetailsReadService, verifier *master.CacheFreshnessVerifier) *TripDetailsReadHandler {
+	return &TripDetailsReadHandler{service: service, verifier: verifier, logger: log.Default()}
 }
 
 func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter, request *http.Request) {
+	cacheFlag, flagErr := parseCacheFlag(request.URL.RawQuery)
+	zoneCode, zoneErr := parseZoneCode(request.URL.RawQuery)
 	lookup := master.RouteLookup{
 		OperatorCode: request.PathValue("operatorCode"),
 		FromCode:     request.PathValue("fromCode"),
 		ToCode:       request.PathValue("toCode"),
 		TripDate:     request.PathValue("tripDate"),
 	}
-	if !master.ValidSearchLookup(lookup) {
+	// One combined rejection so the response cannot depend on which of the
+	// validations happens to run first.
+	if flagErr != nil || !master.ValidSearchLookup(lookup) {
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
+		return
+	}
+	if cacheFlag == cacheFlagFromLive {
+		username := request.PathValue("username")
+		apiToken := request.PathValue("apiToken")
+		baseURL, resolved := master.ZoneBitsBaseURL(zoneCode)
+		if zoneErr != nil || !resolved || !master.ValidLiveSearchLookup(lookup, username, apiToken) {
+			// An unknown or absent zone, or missing path credentials, is the
+			// caller's error, not an upstream failure.
+			handler.logger.Printf("live read rejected: action=SEARCH operator=%q reason=invalid_live_request",
+				lookup.OperatorCode)
+			writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
+			return
+		}
+		handler.serveLive(response, request, master.BitsLookup{
+			Action:       master.BitsActionSearch,
+			OperatorCode: lookup.OperatorCode,
+			BaseURL:      baseURL,
+			Username:     username,
+			APIToken:     apiToken,
+			FromCode:     lookup.FromCode,
+			ToCode:       lookup.ToCode,
+			TravelDate:   lookup.TripDate,
+		})
 		return
 	}
 	if handler.service == nil {
@@ -45,6 +78,8 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 }
 
 func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter, request *http.Request) {
+	cacheFlag, flagErr := parseCacheFlag(request.URL.RawQuery)
+	zoneCode, zoneErr := parseZoneCode(request.URL.RawQuery)
 	lookup := master.RouteLookup{
 		OperatorCode: request.PathValue("operatorCode"),
 		TripCode:     request.PathValue("tripCode"),
@@ -52,8 +87,33 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 		ToCode:       request.PathValue("toStationCode"),
 		TripDate:     request.PathValue("travelDate"),
 	}
-	if !master.ValidBusMapLookup(lookup) {
+	// One combined rejection so the response cannot depend on which of the
+	// validations happens to run first.
+	if flagErr != nil || !master.ValidBusMapLookup(lookup) {
 		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
+		return
+	}
+	if cacheFlag == cacheFlagFromLive {
+		username := request.PathValue("username")
+		apiToken := request.PathValue("apiToken")
+		baseURL, resolved := master.ZoneBitsBaseURL(zoneCode)
+		if zoneErr != nil || !resolved || !master.ValidLiveBusMapLookup(lookup, username, apiToken) {
+			handler.logger.Printf("live read rejected: action=BUSMAP operator=%q reason=invalid_live_request",
+				lookup.OperatorCode)
+			writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
+			return
+		}
+		handler.serveLive(response, request, master.BitsLookup{
+			Action:       master.BitsActionBusMap,
+			OperatorCode: lookup.OperatorCode,
+			BaseURL:      baseURL,
+			Username:     username,
+			APIToken:     apiToken,
+			TripCode:     lookup.TripCode,
+			FromCode:     lookup.FromCode,
+			ToCode:       lookup.ToCode,
+			TravelDate:   lookup.TripDate,
+		})
 		return
 	}
 	if handler.service == nil {
@@ -70,6 +130,43 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 
 func (handler *TripDetailsReadHandler) ServeInvalidRoute(response http.ResponseWriter, _ *http.Request) {
 	writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
+}
+
+// serveLive answers a Cache_Flag value of 0 from Bits.
+//
+// There is deliberately no fallback to the cached copy on failure: a caller that
+// asked for live data must never receive cache data labelled as live, which is
+// the confusion this feature exists to remove.
+func (handler *TripDetailsReadHandler) serveLive(response http.ResponseWriter, request *http.Request, lookup master.BitsLookup) {
+	if handler.verifier == nil {
+		writeJSONStatus(response, http.StatusServiceUnavailable, 0, "Live verification is not configured")
+		return
+	}
+	result, err := handler.verifier.Verify(request.Context(), lookup, request.RemoteAddr)
+	switch {
+	case errors.Is(err, master.ErrVerificationBusy):
+		writeJSONStatus(response, http.StatusTooManyRequests, 0, "Live verification busy")
+	case errors.Is(err, master.ErrOperatorCredentialUnavailable):
+		writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
+	case errors.Is(err, master.ErrLiveSourceRejected):
+		// Bits is healthy and answered; it just has nothing for this lookup,
+		// whether because the date has passed or the operator does not serve the
+		// route. That is the same answer the cached path gives when it finds
+		// nothing, so it gets the same status rather than a gateway error the
+		// caller would retry. The specific code is logged, never returned.
+		writeJSONStatus(response, http.StatusNotFound, 0, "Trip details not found")
+	case err != nil:
+		// The specific reason is logged, never returned, so no upstream status
+		// code or body can reach the caller.
+		writeJSONStatus(response, http.StatusBadGateway, 0, "Live source unavailable")
+	case result.DataEmpty:
+		writeJSONStatus(response, http.StatusNotFound, 0, "Trip details not found")
+	default:
+		// Reusing writeJSONData keeps the envelope, member order, datetime
+		// rendering, and Content-Type identical to the cached path by sharing
+		// the code rather than by copying it.
+		writeJSONData(response, result.Data)
+	}
 }
 
 func (handler *TripDetailsReadHandler) writeReadError(response http.ResponseWriter, operation string, err error) {
