@@ -14,6 +14,9 @@ const (
 	Production  AppEnvironment = "production"
 )
 
+// Version is the service release version reported by the health check API.
+const Version = "v1.0.0"
+
 // RuntimeConfig is the service runtime configuration.
 type RuntimeConfig struct {
 	AppEnvironment     AppEnvironment

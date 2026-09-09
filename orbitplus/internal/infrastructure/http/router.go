@@ -71,7 +71,7 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	mux.Handle("POST /api/tripdetails", NewTripDetailsHandler(tripDetailsService))
 	mux.Handle("POST /orbitplus/api/tripdetails/dlq", NewTripDetailsDLQHandler(tripDetailsService))
 	mux.Handle("POST /api/orionmax/inventory/events", NewOrionmaxInventoryChangeHandler(orionmaxInventoryChangeService))
-	mux.Handle("GET /health", NewHealthHandler())
+	mux.Handle("GET /health", NewHealthHandler(master.Version))
 	mux.Handle("GET /orbitplus/api/3.0/json/{operatorCode}/{username}/{apiToken}/search/{fromCode}/{toCode}/{tripDate}", http.HandlerFunc(readHandler.ServeSearch))
 	mux.Handle("GET /orbitplus/api/3.0/json/{operatorCode}/{username}/{apiToken}/busmap/{tripCode}/{fromStationCode}/{toStationCode}/{travelDate}", http.HandlerFunc(readHandler.ServeBusMap))
 	mux.Handle("GET /orbitplus/api/3.0/json/", http.HandlerFunc(readHandler.ServeInvalidRoute))

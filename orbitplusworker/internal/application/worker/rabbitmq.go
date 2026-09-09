@@ -7,6 +7,10 @@ import "context"
 type RabbitMQDelivery interface {
 	Payload() []byte
 	Ack(ctx context.Context) error
+	// Requeue returns the delivery to the queue for later redelivery without
+	// acknowledging it. The Worker uses it when a zone is rate-limited so the
+	// task is retried later while the goroutine moves on to other deliveries.
+	Requeue(ctx context.Context) error
 }
 
 // RabbitMQConsumer supplies manually acknowledged deliveries.
