@@ -69,17 +69,12 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	message = parsedMessage
 	slog.Info("TripDetails refresh started", "actionType", message.ActionType, "operator", message.OperatorCode)
 
-	// Gate the whole delivery on the zone's cooldown before any BITS work. The
-	// slot is acquired once per delivery, so bounded retries below reuse it
-	// rather than re-checking the limit on every attempt. A rate-limited zone is
-	// requeued so this goroutine can immediately pick up other zones' tasks.
-	if allowed, retryAfter, err := worker.rateLimiter.Acquire(ctx, message.ZoneURL); err != nil {
-		// Fail open: a limiter/cache outage must not halt all refreshes. The
-		// tradeoff is a temporary loss of the per-zone guarantee while the cache
-		// is unreachable. Flip to a requeue here to fail closed instead.
-		slog.Warn("zone rate-limit check failed; allowing request", "operator", message.OperatorCode, "error", err.Error())
-	} else if !allowed {
-		return worker.requeueRateLimited(ctx, delivery, message, retryAfter)
+	// Wait until the zone's rate-limit window admits this request before any
+	// BITS work. The task is never requeued: this goroutine holds the delivery
+	// and waits until the zone is eligible, then processes it. The slot is
+	// acquired once per delivery, so the bounded retries below reuse it.
+	if err := worker.awaitZoneRateLimit(ctx, message); err != nil {
+		return ExecutionResult{Status: ExecutionCancelled, Err: err}
 	}
 
 	for attempt := 1; attempt <= worker.config.MaxAttempts; attempt++ {
@@ -141,32 +136,43 @@ func (worker *TripDetailsRefreshWorker) processOnce(ctx context.Context, message
 	return "", "", orbitPlusStatus, false
 }
 
-// requeueRateLimited returns a rate-limited delivery to the queue without
-// calling BITS. It pauses for a bounded time first so a queue dominated by one
-// cooling-down zone does not spin in a tight redelivery loop. The pause never
-// exceeds the configured backoff, so other zones are not starved: the goroutine
-// is released quickly to process the next delivery.
-func (worker *TripDetailsRefreshWorker) requeueRateLimited(ctx context.Context, delivery RabbitMQDelivery, message domain.TripDetailsRefreshMessage, retryAfter time.Duration) ExecutionResult {
-	pause := retryAfter
-	if pause <= 0 || pause > worker.config.RateLimitRequeueBackoff {
-		pause = worker.config.RateLimitRequeueBackoff
-	}
-	slog.Info("TripDetails refresh rate-limited; requeuing",
-		"actionType", message.ActionType,
-		"operator", message.OperatorCode,
-		"zoneURL", message.ZoneURL,
-		"retryAfter", retryAfter.String(),
-		"pause", pause.String(),
-	)
-	if pause > 0 {
-		if err := waitForRetry(ctx, pause); err != nil {
-			return ExecutionResult{Status: ExecutionCancelled, Err: err}
+// rateLimitPollFallback is used only if the limiter reports a zone as blocked
+// without a positive wait time, so the loop cannot spin.
+const rateLimitPollFallback = time.Second
+
+// awaitZoneRateLimit blocks until the zone's rate-limit window admits this
+// request, then returns so the delivery is processed in place. The task is
+// never requeued; this goroutine waits out the current window (waking exactly
+// when it resets) and re-checks the quota. It returns an error only if the
+// context is cancelled while waiting.
+func (worker *TripDetailsRefreshWorker) awaitZoneRateLimit(ctx context.Context, message domain.TripDetailsRefreshMessage) error {
+	for {
+		allowed, retryAfter, err := worker.rateLimiter.Acquire(ctx, message.ZoneURL)
+		if err != nil {
+			// Fail open: a limiter/cache outage must not halt all refreshes. The
+			// tradeoff is a temporary loss of the per-zone guarantee while the
+			// cache is unreachable.
+			slog.Warn("zone rate-limit check failed; allowing request", "operator", message.OperatorCode, "error", err.Error())
+			return nil
+		}
+		if allowed {
+			return nil
+		}
+		wait := retryAfter
+		if wait <= 0 {
+			wait = rateLimitPollFallback
+		}
+		slog.Info("TripDetails refresh waiting for zone rate limit",
+			"actionType", message.ActionType,
+			"operator", message.OperatorCode,
+			"zoneURL", message.ZoneURL,
+			"retryAfter", retryAfter.String(),
+			"wait", wait.String(),
+		)
+		if err := waitForRetry(ctx, wait); err != nil {
+			return err
 		}
 	}
-	if err := delivery.Requeue(ctx); err != nil {
-		return worker.operationError(ExecutionRequeueError, err)
-	}
-	return ExecutionResult{Status: ExecutionRateLimited}
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {
