@@ -21,13 +21,14 @@ type TripDetailsRefreshWorker struct {
 	source           TripDetailsClient
 	credentialClient OperatorCredentialClient
 	orbitPlusClient  OrbitPlusClient
+	rateLimiter      ZoneRateLimiter
 }
 
-func NewTripDetailsRefreshWorker(config WorkerConfig, consumer RabbitMQConsumer, source TripDetailsClient, credentialClient OperatorCredentialClient, orbitPlusClient OrbitPlusClient) (*TripDetailsRefreshWorker, error) {
+func NewTripDetailsRefreshWorker(config WorkerConfig, consumer RabbitMQConsumer, source TripDetailsClient, credentialClient OperatorCredentialClient, orbitPlusClient OrbitPlusClient, rateLimiter ZoneRateLimiter) (*TripDetailsRefreshWorker, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if consumer == nil || source == nil || credentialClient == nil || orbitPlusClient == nil {
+	if consumer == nil || source == nil || credentialClient == nil || orbitPlusClient == nil || rateLimiter == nil {
 		return nil, fmt.Errorf("%w: all injected dependencies are required", ErrInvalidConfig)
 	}
 	return &TripDetailsRefreshWorker{
@@ -36,6 +37,7 @@ func NewTripDetailsRefreshWorker(config WorkerConfig, consumer RabbitMQConsumer,
 		source:           source,
 		credentialClient: credentialClient,
 		orbitPlusClient:  orbitPlusClient,
+		rateLimiter:      rateLimiter,
 	}, nil
 }
 
@@ -66,6 +68,19 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	}
 	message = parsedMessage
 	slog.Info("TripDetails refresh started", "actionType", message.ActionType, "operator", message.OperatorCode)
+
+	// Gate the whole delivery on the zone's cooldown before any BITS work. The
+	// slot is acquired once per delivery, so bounded retries below reuse it
+	// rather than re-checking the limit on every attempt. A rate-limited zone is
+	// requeued so this goroutine can immediately pick up other zones' tasks.
+	if allowed, retryAfter, err := worker.rateLimiter.Acquire(ctx, message.ZoneURL); err != nil {
+		// Fail open: a limiter/cache outage must not halt all refreshes. The
+		// tradeoff is a temporary loss of the per-zone guarantee while the cache
+		// is unreachable. Flip to a requeue here to fail closed instead.
+		slog.Warn("zone rate-limit check failed; allowing request", "operator", message.OperatorCode, "error", err.Error())
+	} else if !allowed {
+		return worker.requeueRateLimited(ctx, delivery, message, retryAfter)
+	}
 
 	for attempt := 1; attempt <= worker.config.MaxAttempts; attempt++ {
 		slog.Info("TripDetails refresh processing attempt started",
@@ -124,6 +139,34 @@ func (worker *TripDetailsRefreshWorker) processOnce(ctx context.Context, message
 		return ExecutionOrbitPlusOutcome, "OrbitPlus TripDetails returned a retryable response.", orbitPlusStatus, orbitPlusStatus == OrbitPlusRetryable
 	}
 	return "", "", orbitPlusStatus, false
+}
+
+// requeueRateLimited returns a rate-limited delivery to the queue without
+// calling BITS. It pauses for a bounded time first so a queue dominated by one
+// cooling-down zone does not spin in a tight redelivery loop. The pause never
+// exceeds the configured backoff, so other zones are not starved: the goroutine
+// is released quickly to process the next delivery.
+func (worker *TripDetailsRefreshWorker) requeueRateLimited(ctx context.Context, delivery RabbitMQDelivery, message domain.TripDetailsRefreshMessage, retryAfter time.Duration) ExecutionResult {
+	pause := retryAfter
+	if pause <= 0 || pause > worker.config.RateLimitRequeueBackoff {
+		pause = worker.config.RateLimitRequeueBackoff
+	}
+	slog.Info("TripDetails refresh rate-limited; requeuing",
+		"actionType", message.ActionType,
+		"operator", message.OperatorCode,
+		"zoneURL", message.ZoneURL,
+		"retryAfter", retryAfter.String(),
+		"pause", pause.String(),
+	)
+	if pause > 0 {
+		if err := waitForRetry(ctx, pause); err != nil {
+			return ExecutionResult{Status: ExecutionCancelled, Err: err}
+		}
+	}
+	if err := delivery.Requeue(ctx); err != nil {
+		return worker.operationError(ExecutionRequeueError, err)
+	}
+	return ExecutionResult{Status: ExecutionRateLimited}
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {

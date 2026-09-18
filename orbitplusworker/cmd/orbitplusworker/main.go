@@ -16,6 +16,7 @@ import (
 
 	"orbitplusworker/internal/application/worker"
 	"orbitplusworker/internal/infrastructure/bits"
+	"orbitplusworker/internal/infrastructure/dragonfly"
 	"orbitplusworker/internal/infrastructure/orbit"
 	"orbitplusworker/internal/infrastructure/orbitplus"
 	"orbitplusworker/internal/infrastructure/rabbitmq"
@@ -77,6 +78,35 @@ func startHealthServer(config worker.HealthAPIConfig, readiness *worker.Readines
 	return shutdown, nil
 }
 
+// newZoneRateLimiter selects the per-zone BITS rate limiter from configuration:
+// a no-op when disabled, the process-local limiter for a single instance, or the
+// distributed Dragonfly limiter when a cache is configured. A configured cache
+// that cannot be reached is a startup failure, so the per-zone guarantee is
+// never silently downgraded.
+func newZoneRateLimiter(config worker.RuntimeConfig) (worker.ZoneRateLimiter, func(), error) {
+	if !config.RateLimit.Enabled() {
+		log.Print("BITS zone rate limiting disabled: set WORKER_BITS_RATE_LIMIT to enable")
+		return worker.AllowAllRateLimiter{}, func() {}, nil
+	}
+	if config.Cache == nil {
+		log.Printf("BITS zone rate limiting enabled (in-memory, single instance): default=%s overrides=%d", config.RateLimit.Default, len(config.RateLimit.Overrides))
+		return worker.NewInMemoryZoneRateLimiter(config.RateLimit), func() {}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), config.Cache.DialTimeout)
+	defer cancel()
+	limiter, err := dragonfly.NewZoneRateLimiter(ctx, dragonfly.Config{
+		Address:     config.Cache.Address,
+		Password:    config.Cache.Password,
+		Database:    config.Cache.Database,
+		DialTimeout: config.Cache.DialTimeout,
+	}, config.RateLimit)
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Printf("BITS zone rate limiting enabled (distributed via Dragonfly at %s): default=%s overrides=%d", config.Cache.Address, config.RateLimit.Default, len(config.RateLimit.Overrides))
+	return limiter, func() { _ = limiter.Close() }, nil
+}
+
 func main() {
 	log.Print("beginning tripdetails refresh worker startup")
 	config, err := worker.LoadRuntimeConfig()
@@ -84,6 +114,12 @@ func main() {
 		log.Fatalf("invalid tripdetails refresh worker configuration: %v", err)
 	}
 	log.Printf("tripdetails refresh worker configuration loaded: APP_ENV=%s", config.AppEnvironment)
+
+	rateLimiter, closeRateLimiter, err := newZoneRateLimiter(config)
+	if err != nil {
+		log.Fatalf("initialize BITS zone rate limiter: %v", err)
+	}
+	defer closeRateLimiter()
 
 	readiness := worker.NewReadiness()
 	shutdownHealthServer, err := startHealthServer(config.HealthAPI, readiness)
@@ -170,7 +206,7 @@ func main() {
 	}
 	log.Print("OrbitPlus client setup complete")
 
-	refreshWorker, err := worker.NewTripDetailsRefreshWorker(config.Worker, consumer, bitsClient, credentialClient, orbitPlusClient)
+	refreshWorker, err := worker.NewTripDetailsRefreshWorker(config.Worker, consumer, bitsClient, credentialClient, orbitPlusClient, rateLimiter)
 	if err != nil {
 		log.Printf("cannot construct TripDetailsRefreshWorker: %v", err)
 		return

@@ -42,6 +42,11 @@ type WorkerConfig struct {
 	WorkerConcurrency int             `json:"workerConcurrency"`
 	MaxAttempts       int             `json:"maxAttempts"`
 	RetryDelays       []time.Duration `json:"retryDelays"`
+	// RateLimitRequeueBackoff bounds how long a goroutine pauses before returning
+	// a rate-limited delivery to the queue. It prevents a hot requeue loop when
+	// the queue is dominated by a cooling-down zone, without holding the delivery
+	// for the full cooldown.
+	RateLimitRequeueBackoff time.Duration `json:"rateLimitRequeueBackoff"`
 }
 
 func (config WorkerConfig) Validate() error {
@@ -58,6 +63,9 @@ func (config WorkerConfig) Validate() error {
 		if delay <= 0 {
 			return fmt.Errorf("%w: worker retry delays must be positive", ErrInvalidConfig)
 		}
+	}
+	if config.RateLimitRequeueBackoff < 0 {
+		return fmt.Errorf("%w: worker rate-limit requeue backoff must not be negative", ErrInvalidConfig)
 	}
 	return nil
 }
@@ -149,6 +157,16 @@ type OrbitConfig struct {
 	AccessToken   string        `json:"-"`
 }
 
+// CacheConfig contains the Dragonfly (Redis-compatible) connection settings used
+// by the distributed zone rate limiter. It is nil when DRAGONFLY_ADDRESS is
+// unset, in which case the worker uses the process-local limiter.
+type CacheConfig struct {
+	Address     string        `json:"address"`
+	Password    string        `json:"-"`
+	Database    int           `json:"database"`
+	DialTimeout time.Duration `json:"dialTimeout"`
+}
+
 // RuntimeConfig is the validated composition input. Secret values are resolved
 // only at startup from environment variables or mounted files.
 type RuntimeConfig struct {
@@ -161,6 +179,12 @@ type RuntimeConfig struct {
 	HealthAPI             HealthAPIConfig `json:"healthApi"`
 	HTTPTimeout           time.Duration   `json:"httpTimeout"`
 	OrbitPlusResponseSize int64           `json:"orbitPlusResponseSize"`
+	// RateLimit is the per-zone BITS cooldown policy. When it resolves to no
+	// positive interval, rate limiting is disabled.
+	RateLimit RateLimitPolicy `json:"-"`
+	// Cache is the distributed rate-limit backing store. Nil selects the
+	// in-memory limiter (single instance only).
+	Cache *CacheConfig `json:"-"`
 }
 
 func DefaultRuntimeConfig() RuntimeConfig {
@@ -168,9 +192,10 @@ func DefaultRuntimeConfig() RuntimeConfig {
 		AppEnvironment: Production,
 		RabbitMQ:       RabbitMQConfig{Prefetch: 10},
 		Worker: WorkerConfig{
-			WorkerConcurrency: 10,
-			MaxAttempts:       3,
-			RetryDelays:       []time.Duration{2 * time.Second, 5 * time.Second},
+			WorkerConcurrency:       10,
+			MaxAttempts:             3,
+			RetryDelays:             []time.Duration{2 * time.Second, 5 * time.Second},
+			RateLimitRequeueBackoff: 2 * time.Second,
 		},
 		HealthAPI:   HealthAPIConfig{Host: "0.0.0.0", Port: 8080},
 		HTTPTimeout: 15 * time.Second, OrbitPlusResponseSize: 64 << 10,
@@ -180,6 +205,9 @@ func DefaultRuntimeConfig() RuntimeConfig {
 // LoadRuntimeConfig reads optional non-secret JSON settings then environment
 // overrides. Values ending in _FILE are read from deployment-managed files.
 func LoadRuntimeConfig() (RuntimeConfig, error) {
+	if err := loadDotEnv(".env"); err != nil {
+		return RuntimeConfig{}, fmt.Errorf("load .env: %w", err)
+	}
 	config := DefaultRuntimeConfig()
 	if configFilePath := os.Getenv("TRIPDETAILS_REFRESH_WORKER_CONFIG_FILE"); configFilePath != "" {
 		configFile, err := os.Open(configFilePath)
@@ -247,6 +275,102 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 	if err := setPositiveDuration(lookup, "WORKER_HTTP_TIMEOUT", &config.HTTPTimeout); err != nil {
 		return err
 	}
+	if err := setPositiveDuration(lookup, "WORKER_BITS_RATE_LIMIT_REQUEUE_BACKOFF", &config.Worker.RateLimitRequeueBackoff); err != nil {
+		return err
+	}
+	if err := config.applyRateLimit(lookup); err != nil {
+		return err
+	}
+	if err := config.applyCache(lookup); err != nil {
+		return err
+	}
+	return nil
+}
+
+// applyRateLimit reads the per-zone BITS cooldown policy. The default interval
+// applies to every zone; overrides set a different interval for specific zone
+// URLs. Leaving both unset disables rate limiting.
+func (config *RuntimeConfig) applyRateLimit(lookup func(string) (string, bool)) error {
+	if value, ok := lookup("WORKER_BITS_RATE_LIMIT"); ok && strings.TrimSpace(value) != "" {
+		limit, err := parseRateLimit(value)
+		if err != nil {
+			return fmt.Errorf("WORKER_BITS_RATE_LIMIT %w", err)
+		}
+		config.RateLimit.Default = limit
+	}
+	if value, ok := lookup("WORKER_BITS_RATE_LIMIT_OVERRIDES"); ok && strings.TrimSpace(value) != "" {
+		overrides, err := parseRateLimitOverrides(value)
+		if err != nil {
+			return err
+		}
+		config.RateLimit.Overrides = overrides
+	}
+	return nil
+}
+
+// parseRateLimit parses a "hits/window" quota such as "10/1m" or "5/30s": the
+// number of BITS hits allowed per zone within the given time window.
+func parseRateLimit(value string) (RateLimit, error) {
+	hitsText, windowText, found := strings.Cut(strings.TrimSpace(value), "/")
+	if !found {
+		return RateLimit{}, fmt.Errorf("must be in hits/window form, e.g. 10/1m")
+	}
+	hits, err := strconv.Atoi(strings.TrimSpace(hitsText))
+	if err != nil || hits <= 0 {
+		return RateLimit{}, fmt.Errorf("must have a positive hit count, e.g. 10/1m")
+	}
+	window, err := time.ParseDuration(strings.TrimSpace(windowText))
+	if err != nil || window <= 0 {
+		return RateLimit{}, fmt.Errorf("must have a positive window duration, e.g. 10/1m")
+	}
+	return RateLimit{Hits: hits, Window: window}, nil
+}
+
+// parseRateLimitOverrides parses a comma-separated list of "zoneURL=hits/window"
+// pairs. The pair is split on the last '=' so zone URLs are preserved.
+func parseRateLimitOverrides(value string) (map[string]RateLimit, error) {
+	overrides := make(map[string]RateLimit)
+	for _, pair := range strings.Split(value, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		separator := strings.LastIndex(pair, "=")
+		if separator <= 0 || separator == len(pair)-1 {
+			return nil, fmt.Errorf("WORKER_BITS_RATE_LIMIT_OVERRIDES must be comma-separated zoneURL=hits/window pairs")
+		}
+		zone := strings.TrimSpace(pair[:separator])
+		limit, err := parseRateLimit(pair[separator+1:])
+		if err != nil {
+			return nil, fmt.Errorf("WORKER_BITS_RATE_LIMIT_OVERRIDES %w", err)
+		}
+		overrides[zone] = limit
+	}
+	return overrides, nil
+}
+
+// applyCache reads the optional Dragonfly connection used to share rate-limit
+// state across instances. It is enabled only when DRAGONFLY_ADDRESS is set.
+func (config *RuntimeConfig) applyCache(lookup func(string) (string, bool)) error {
+	address, ok := lookup("DRAGONFLY_ADDRESS")
+	if !ok || strings.TrimSpace(address) == "" {
+		return nil
+	}
+	cache := CacheConfig{Address: strings.TrimSpace(address), DialTimeout: 5 * time.Second}
+	if password, ok := lookup("DRAGONFLY_PASSWORD"); ok {
+		cache.Password = password
+	}
+	if err := setPositiveDuration(lookup, "DRAGONFLY_CONNECTION_TIMEOUT", &cache.DialTimeout); err != nil {
+		return err
+	}
+	if value, ok := lookup("DRAGONFLY_DATABASE"); ok && strings.TrimSpace(value) != "" {
+		database, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || database < 0 {
+			return fmt.Errorf("DRAGONFLY_DATABASE must be a non-negative integer")
+		}
+		cache.Database = database
+	}
+	config.Cache = &cache
 	return nil
 }
 
