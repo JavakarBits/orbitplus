@@ -42,11 +42,6 @@ type WorkerConfig struct {
 	WorkerConcurrency int             `json:"workerConcurrency"`
 	MaxAttempts       int             `json:"maxAttempts"`
 	RetryDelays       []time.Duration `json:"retryDelays"`
-	// RateLimitRequeueBackoff bounds how long a goroutine pauses before returning
-	// a rate-limited delivery to the queue. It prevents a hot requeue loop when
-	// the queue is dominated by a cooling-down zone, without holding the delivery
-	// for the full cooldown.
-	RateLimitRequeueBackoff time.Duration `json:"rateLimitRequeueBackoff"`
 }
 
 func (config WorkerConfig) Validate() error {
@@ -63,9 +58,6 @@ func (config WorkerConfig) Validate() error {
 		if delay <= 0 {
 			return fmt.Errorf("%w: worker retry delays must be positive", ErrInvalidConfig)
 		}
-	}
-	if config.RateLimitRequeueBackoff < 0 {
-		return fmt.Errorf("%w: worker rate-limit requeue backoff must not be negative", ErrInvalidConfig)
 	}
 	return nil
 }
@@ -192,10 +184,9 @@ func DefaultRuntimeConfig() RuntimeConfig {
 		AppEnvironment: Production,
 		RabbitMQ:       RabbitMQConfig{Prefetch: 10},
 		Worker: WorkerConfig{
-			WorkerConcurrency:       10,
-			MaxAttempts:             3,
-			RetryDelays:             []time.Duration{2 * time.Second, 5 * time.Second},
-			RateLimitRequeueBackoff: 2 * time.Second,
+			WorkerConcurrency: 10,
+			MaxAttempts:       3,
+			RetryDelays:       []time.Duration{2 * time.Second, 5 * time.Second},
 		},
 		HealthAPI:   HealthAPIConfig{Host: "0.0.0.0", Port: 8080},
 		HTTPTimeout: 15 * time.Second, OrbitPlusResponseSize: 64 << 10,
@@ -273,9 +264,6 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 		return err
 	}
 	if err := setPositiveDuration(lookup, "WORKER_HTTP_TIMEOUT", &config.HTTPTimeout); err != nil {
-		return err
-	}
-	if err := setPositiveDuration(lookup, "WORKER_BITS_RATE_LIMIT_REQUEUE_BACKOFF", &config.Worker.RateLimitRequeueBackoff); err != nil {
 		return err
 	}
 	if err := config.applyRateLimit(lookup); err != nil {

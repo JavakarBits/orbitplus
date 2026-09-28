@@ -15,15 +15,12 @@ import (
 type RabbitMQDelivery struct {
 	payload []byte
 	ack     func() error
-	nack    func() error
 }
 
 func newRabbitMQDelivery(delivery amqp.Delivery) *RabbitMQDelivery {
 	return &RabbitMQDelivery{
 		payload: append([]byte(nil), delivery.Body...),
 		ack:     func() error { return delivery.Ack(false) },
-		// requeue=true returns the delivery to the queue for later redelivery.
-		nack: func() error { return delivery.Nack(false, true) },
 	}
 }
 
@@ -37,16 +34,6 @@ func (delivery *RabbitMQDelivery) Ack(ctx context.Context) error {
 		return fmt.Errorf("RabbitMQ delivery acknowledgement is unavailable")
 	}
 	return delivery.ack()
-}
-
-func (delivery *RabbitMQDelivery) Requeue(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if delivery.nack == nil {
-		return fmt.Errorf("RabbitMQ delivery requeue is unavailable")
-	}
-	return delivery.nack()
 }
 
 var _ worker.RabbitMQDelivery = (*RabbitMQDelivery)(nil)
