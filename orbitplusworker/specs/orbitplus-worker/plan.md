@@ -49,9 +49,22 @@ In the current phase, `ACCEPTED` is the only outcome the existing OrbitPlus dest
 
 No Worker retry policy, retry queue, dead-letter configuration, scheduler behavior, distributed coordination, or destination response internals are introduced by this plan.
 
+## Zone Rate Limiting
+
+Before any Bits/credential work for a delivery, the Worker enforces a per-zone quota. A zone is the delivery's Bits zone endpoint (zone URL). The quota is a fixed window: `hits/window` (for example `10/1m`), with optional per-zone overrides. The window starts on a zone's first hit and resets when it expires; unused hits do not carry over.
+
+Behavior when a zone is over quota: the Worker waits in place until that zone's window resets, then processes the same delivery. It does not requeue or drop the delivery. Other zones are processed independently by other goroutines, each against its own quota.
+
+Enforcement is atomic so concurrent workers cannot together exceed a zone's quota:
+
+- Distributed (when `DRAGONFLY_ADDRESS` is set): a single Lua script does `INCR` on the zone key and, on the first hit of a window, `PEXPIRE` for the window duration, returning the count and remaining TTL. Because the counter lives in Dragonfly, the quota holds across all goroutines and process instances.
+- In-memory (when `DRAGONFLY_ADDRESS` is unset): an equivalent mutex-guarded per-zone window counter, correct within a single process only.
+
+Failure policy: a configured cache that is unreachable at startup is a fatal, visible failure. If the limiter errors during processing, the Worker fails open (logs and allows) so a cache outage does not halt all refreshes. No quota configured means limiting is disabled.
+
 ## Runtime Configuration and Concurrency
 
-Documented configuration is `APP_ENV`, RabbitMQ settings, `BITS_BASE_URL`, `ORBITPLUS_URL`, `WORKER_CONCURRENCY`, optional `WORKER_HTTP_TIMEOUT`, and optional Health API settings. Legacy `ORBIT_USERNAME`, `ORBIT_API_TOKEN`, `ORBIT_ZONE_URL`, and `WORKER_OPERATION_TIMEOUT` are not part of this configuration policy.
+Documented configuration is `APP_ENV`, RabbitMQ settings, `BITS_BASE_URL`, `ORBITPLUS_URL`, `WORKER_CONCURRENCY`, optional `WORKER_HTTP_TIMEOUT`, optional Health API settings, and the zone rate-limit settings (`WORKER_BITS_RATE_LIMIT`, optional `WORKER_BITS_RATE_LIMIT_OVERRIDES`, and the `DRAGONFLY_*` cache settings). Legacy `ORBIT_USERNAME`, `ORBIT_API_TOKEN`, `ORBIT_ZONE_URL`, and `WORKER_OPERATION_TIMEOUT` are not part of this configuration policy.
 
 Worker → OrbitPlus authentication exists in the current implementation as a bearer-token mechanism. The intended architectural direction is a dedicated context token specifically for Worker → OrbitPlus communication; the token name, HTTP header, format, validation, storage, and configuration variable names are unresolved. The current bearer-token implementation is a temporary detail, not the final authentication contract.
 
@@ -59,4 +72,4 @@ Worker → OrbitPlus authentication exists in the current implementation as a be
 
 ## Boundaries
 
-Out of scope: scheduler and publishers; Master implementation, storage, and query APIs; Dragonfly; credential service; V1; duplicate detection; freshness tracking; and version comparison. No persistence, query, freshness, deduplication, rate-limit, or security requirement is assigned to the Worker or the external destination. The dedicated Worker → OrbitPlus context-token contract details are unresolved and out of scope for this phase.
+Out of scope: scheduler and publishers; Master implementation, storage, and query APIs; credential service; V1; duplicate detection; freshness tracking; and version comparison. No persistence, query, freshness, deduplication, or security requirement is assigned to the Worker or the external destination. Dragonfly is in scope only as the backing store for the per-zone rate-limit counter and for no other Worker concern. The dedicated Worker → OrbitPlus context-token contract details are unresolved and out of scope for this phase.

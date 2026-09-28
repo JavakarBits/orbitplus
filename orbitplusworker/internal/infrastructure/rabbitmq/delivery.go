@@ -18,7 +18,10 @@ type RabbitMQDelivery struct {
 }
 
 func newRabbitMQDelivery(delivery amqp.Delivery) *RabbitMQDelivery {
-	return &RabbitMQDelivery{payload: append([]byte(nil), delivery.Body...), ack: func() error { return delivery.Ack(false) }}
+	return &RabbitMQDelivery{
+		payload: append([]byte(nil), delivery.Body...),
+		ack:     func() error { return delivery.Ack(false) },
+	}
 }
 
 func (delivery *RabbitMQDelivery) Payload() []byte { return append([]byte(nil), delivery.payload...) }

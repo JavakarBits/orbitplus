@@ -21,13 +21,14 @@ type TripDetailsRefreshWorker struct {
 	source           TripDetailsClient
 	credentialClient OperatorCredentialClient
 	orbitPlusClient  OrbitPlusClient
+	rateLimiter      ZoneRateLimiter
 }
 
-func NewTripDetailsRefreshWorker(config WorkerConfig, consumer RabbitMQConsumer, source TripDetailsClient, credentialClient OperatorCredentialClient, orbitPlusClient OrbitPlusClient) (*TripDetailsRefreshWorker, error) {
+func NewTripDetailsRefreshWorker(config WorkerConfig, consumer RabbitMQConsumer, source TripDetailsClient, credentialClient OperatorCredentialClient, orbitPlusClient OrbitPlusClient, rateLimiter ZoneRateLimiter) (*TripDetailsRefreshWorker, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if consumer == nil || source == nil || credentialClient == nil || orbitPlusClient == nil {
+	if consumer == nil || source == nil || credentialClient == nil || orbitPlusClient == nil || rateLimiter == nil {
 		return nil, fmt.Errorf("%w: all injected dependencies are required", ErrInvalidConfig)
 	}
 	return &TripDetailsRefreshWorker{
@@ -36,6 +37,7 @@ func NewTripDetailsRefreshWorker(config WorkerConfig, consumer RabbitMQConsumer,
 		source:           source,
 		credentialClient: credentialClient,
 		orbitPlusClient:  orbitPlusClient,
+		rateLimiter:      rateLimiter,
 	}, nil
 }
 
@@ -66,6 +68,14 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	}
 	message = parsedMessage
 	slog.Info("TripDetails refresh started", "actionType", message.ActionType, "operator", message.OperatorCode)
+
+	// Wait until the zone's rate-limit window admits this request before any
+	// BITS work. The task is never requeued: this goroutine holds the delivery
+	// and waits until the zone is eligible, then processes it. The slot is
+	// acquired once per delivery, so the bounded retries below reuse it.
+	if err := worker.awaitZoneRateLimit(ctx, message); err != nil {
+		return ExecutionResult{Status: ExecutionCancelled, Err: err}
+	}
 
 	for attempt := 1; attempt <= worker.config.MaxAttempts; attempt++ {
 		slog.Info("TripDetails refresh processing attempt started",
@@ -124,6 +134,45 @@ func (worker *TripDetailsRefreshWorker) processOnce(ctx context.Context, message
 		return ExecutionOrbitPlusOutcome, "OrbitPlus TripDetails returned a retryable response.", orbitPlusStatus, orbitPlusStatus == OrbitPlusRetryable
 	}
 	return "", "", orbitPlusStatus, false
+}
+
+// rateLimitPollFallback is used only if the limiter reports a zone as blocked
+// without a positive wait time, so the loop cannot spin.
+const rateLimitPollFallback = time.Second
+
+// awaitZoneRateLimit blocks until the zone's rate-limit window admits this
+// request, then returns so the delivery is processed in place. The task is
+// never requeued; this goroutine waits out the current window (waking exactly
+// when it resets) and re-checks the quota. It returns an error only if the
+// context is cancelled while waiting.
+func (worker *TripDetailsRefreshWorker) awaitZoneRateLimit(ctx context.Context, message domain.TripDetailsRefreshMessage) error {
+	for {
+		allowed, retryAfter, err := worker.rateLimiter.Acquire(ctx, message.ZoneURL)
+		if err != nil {
+			// Fail open: a limiter/cache outage must not halt all refreshes. The
+			// tradeoff is a temporary loss of the per-zone guarantee while the
+			// cache is unreachable.
+			slog.Warn("zone rate-limit check failed; allowing request", "operator", message.OperatorCode, "error", err.Error())
+			return nil
+		}
+		if allowed {
+			return nil
+		}
+		wait := retryAfter
+		if wait <= 0 {
+			wait = rateLimitPollFallback
+		}
+		slog.Info("TripDetails refresh waiting for zone rate limit",
+			"actionType", message.ActionType,
+			"operator", message.OperatorCode,
+			"zoneURL", message.ZoneURL,
+			"retryAfter", retryAfter.String(),
+			"wait", wait.String(),
+		)
+		if err := waitForRetry(ctx, wait); err != nil {
+			return err
+		}
+	}
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {
