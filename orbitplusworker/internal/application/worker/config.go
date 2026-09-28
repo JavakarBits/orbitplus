@@ -227,7 +227,11 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 			*target = value
 		}
 	}
-	setString("RABBITMQ_URL", &config.RabbitMQ.URL)
+	builtRabbitMQURL, err := buildRabbitMQURL(lookup)
+	if err != nil {
+		return err
+	}
+	config.RabbitMQ.URL = builtRabbitMQURL
 	setString("RABBITMQ_QUEUE", &config.RabbitMQ.Queue)
 	setString("RABBITMQ_EXCHANGE", &config.RabbitMQ.Exchange)
 	setString("RABBITMQ_ROUTING_KEY", &config.RabbitMQ.RoutingKey)
@@ -241,6 +245,13 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 	}
 	if err := loadSecret(lookup, "RABBITMQ_USERNAME", "RABBITMQ_USERNAME_FILE", &config.RabbitMQ.Username); err != nil {
 		return err
+	}
+	// RABBITMQ_USER is the split-key alias shared with the Master. Preserve the
+	// existing RABBITMQ_USERNAME and secret-file contract for compatibility.
+	if config.RabbitMQ.Username == "" {
+		if err := loadSecret(lookup, "RABBITMQ_USER", "RABBITMQ_USER_FILE", &config.RabbitMQ.Username); err != nil {
+			return err
+		}
 	}
 	if err := loadSecret(lookup, "RABBITMQ_PASSWORD", "RABBITMQ_PASSWORD_FILE", &config.RabbitMQ.Password); err != nil {
 		return err
@@ -273,6 +284,46 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 		return err
 	}
 	return nil
+}
+
+// buildRabbitMQURL assembles the internal AMQP endpoint from split environment
+// variables. Credentials remain separate and are supplied through the AMQP
+// client's authentication config.
+func buildRabbitMQURL(lookup func(string) (string, bool)) (string, error) {
+	host, ok := lookup("RABBITMQ_HOST")
+	host = strings.TrimSpace(host)
+	if !ok || host == "" {
+		return "", fmt.Errorf("RABBITMQ_HOST must be set")
+	}
+
+	useTLS := false
+	if value, ok := lookup("RABBITMQ_TLS"); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return "", fmt.Errorf("RABBITMQ_TLS must be true or false")
+		}
+		useTLS = parsed
+	}
+	port := 5672
+	scheme := "amqp"
+	if useTLS {
+		port = 5671
+		scheme = "amqps"
+	}
+	if value, ok := lookup("RABBITMQ_PORT"); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 1 || parsed > 65535 {
+			return "", fmt.Errorf("RABBITMQ_PORT must be an integer between 1 and 65535")
+		}
+		port = parsed
+	}
+
+	vhost := "/"
+	if value, ok := lookup("RABBITMQ_VHOST"); ok && strings.TrimSpace(value) != "" {
+		vhost = "/" + strings.TrimPrefix(strings.TrimSpace(value), "/")
+	}
+	endpoint := url.URL{Scheme: scheme, Host: net.JoinHostPort(host, strconv.Itoa(port)), Path: vhost}
+	return endpoint.String(), nil
 }
 
 // applyRateLimit reads the per-zone BITS cooldown policy. The default interval
@@ -451,7 +502,7 @@ func (config RuntimeConfig) Validate() error {
 	if err := config.HealthAPI.Validate(); err != nil {
 		return err
 	}
-	if err := ValidateRabbitMQURL(config.RabbitMQ.URL, config.AppEnvironment); err != nil {
+	if err := ValidateRabbitMQEndpoint(config.RabbitMQ.URL, config.AppEnvironment); err != nil {
 		return err
 	}
 	if config.RabbitMQ.Queue == "" || config.RabbitMQ.Exchange == "" || config.RabbitMQ.RoutingKey == "" || config.RabbitMQ.Prefetch <= 0 {
@@ -477,9 +528,9 @@ func (config RuntimeConfig) Validate() error {
 
 func (config RuntimeConfig) WorkerConfigValid() error { return config.Worker.Validate() }
 
-// ValidateRabbitMQURL permits amqps in every environment and amqp only in development.
-func ValidateRabbitMQURL(raw string, environment AppEnvironment) error {
-	return validateEndpointURL(raw, environment, "RabbitMQ URL", "amqps", "amqp", false, false)
+// ValidateRabbitMQEndpoint validates the internally assembled RabbitMQ endpoint.
+func ValidateRabbitMQEndpoint(raw string, environment AppEnvironment) error {
+	return validateEndpointURL(raw, environment, "RabbitMQ endpoint", "amqps", "amqp", false, false)
 }
 
 // ValidateBitsURL permits https in every environment and http only in development.
