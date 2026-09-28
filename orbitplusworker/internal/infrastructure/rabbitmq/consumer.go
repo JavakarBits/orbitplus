@@ -41,7 +41,7 @@ type RabbitMQConsumer struct {
 }
 
 func ConnectRabbitMQConsumer(config ConsumerConfig) (*RabbitMQConsumer, error) {
-	if err := worker.ValidateRabbitMQURL(config.URL, config.AppEnvironment); err != nil {
+	if err := worker.ValidateRabbitMQEndpoint(config.URL, config.AppEnvironment); err != nil {
 		return nil, err
 	}
 	parsed, _ := url.Parse(config.URL)
