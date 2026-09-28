@@ -247,7 +247,13 @@ func (worker *TripDetailsRefreshWorker) resolveCredential(ctx context.Context, m
 
 func (worker *TripDetailsRefreshWorker) fetchTripDetails(ctx context.Context, message domain.TripDetailsRefreshMessage, credential BitsOperatorCredential) (BitsTripDetailsResponse, error) {
 	slog.Info("Bits TripDetails request started", "actionType", message.ActionType, "operator", message.OperatorCode)
-	sourceResult, err := worker.source.FetchTripDetails(ctx, BitsTripDetailsRequest{Message: message, Credential: credential})
+	var sourceResult BitsTripDetailsResponse
+	var err error
+	if message.ActionType == domain.ActionSearchBusMap {
+		sourceResult, err = worker.fetchSearchAndBusMaps(ctx, message, credential)
+	} else {
+		sourceResult, err = worker.source.FetchTripDetails(ctx, BitsTripDetailsRequest{Message: message, Credential: credential})
+	}
 	if err != nil {
 		slog.Info("Bits TripDetails request completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
 		return BitsTripDetailsResponse{}, err
