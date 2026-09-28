@@ -44,7 +44,7 @@ func loadQueueConfig() (*QueueConfig, error) {
 // password with special characters is encoded correctly.
 func buildAMQPURL(host string) (string, error) {
 	if host == "" {
-		return "", fmt.Errorf("set RABBITMQ_URL, or RABBITMQ_HOST (with optional RABBITMQ_PORT/RABBITMQ_USER/RABBITMQ_PASSWORD) for inventory event publishing")
+		return "", fmt.Errorf("RABBITMQ_HOST must be set (with optional RABBITMQ_PORT/RABBITMQ_USER/RABBITMQ_PASSWORD/RABBITMQ_VHOST), or provide a single RABBITMQ_URL, for inventory event publishing")
 	}
 	port := 5672
 	if value := os.Getenv("RABBITMQ_PORT"); value != "" {
