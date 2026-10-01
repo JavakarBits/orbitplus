@@ -33,8 +33,15 @@ services:
       ORBIT_ROUTE_STALE_DURATION: ${ORBIT_ROUTE_STALE_DURATION:-}
       # Live verification (cacheFlag=0). Zone, credentials, from, to, and date
       # come from the GET; these two are optional tuning for the Bits fetch.
+      # Optional environment alignment for the main BITS zone. Leave blank to
+      # use the production default from the zone map.
+      BITS_ZONE_BITS_URL: ${BITS_ZONE_BITS_URL:-}
       BITS_HTTP_TIMEOUT: ${BITS_HTTP_TIMEOUT:-}
       LIVE_VERIFICATION_MAX_CONCURRENT: ${LIVE_VERIFICATION_MAX_CONCURRENT:-}
+      # Keep these equal to WORKER_BITS_RATE_LIMIT and its overrides when
+      # Master and Worker share the same Dragonfly database/counters.
+      MASTER_BITS_RATE_LIMIT: ${MASTER_BITS_RATE_LIMIT:-10/1m}
+      MASTER_BITS_RATE_LIMIT_OVERRIDES: ${MASTER_BITS_RATE_LIMIT_OVERRIDES:-}
       CASSANDRA_USERNAME: ${CASSANDRA_USERNAME:-}
       CASSANDRA_PASSWORD: ${CASSANDRA_PASSWORD:-}
       CASSANDRA_CONNECTION_TIMEOUT: ${CASSANDRA_CONNECTION_TIMEOUT:-5s}

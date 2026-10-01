@@ -32,6 +32,7 @@ type masterServices struct {
 	// difference writer and the report reader. Nil when Cassandra could not be
 	// reached for it, which disables recording and the report but not reads.
 	differences *cassandra.CacheFreshnessDifferenceRepository
+	rateLimiter master.ZoneRateLimiter
 	close       func()
 }
 
@@ -114,7 +115,7 @@ func main() {
 	}
 	busmapAnalyticsService := master.NewBusmapAnalyticsService(busmapAnalyticsReader)
 
-	freshnessVerifier := newCacheFreshnessVerifier(config, services.read, services.persistence, differenceWriter)
+	freshnessVerifier := newCacheFreshnessVerifier(config, services.read, services.persistence, differenceWriter, services.rateLimiter)
 
 	router := masterhttp.NewRouter(startedAt, services.tripDetails, orionmaxInventoryChangeService, services.read,
 		services.cache, rabbitMQManagementReader, queueJobsService, tripFreshnessService, tripHistoryService,
@@ -129,7 +130,7 @@ func main() {
 // newCacheFreshnessVerifier builds the live Bits verification path when it is
 // configured. A misconfigured or absent group disables only this feature: the
 // service must keep serving cached reads, so nothing here is fatal.
-func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.TripDetailsReadService, repairer *master.TripDetailsStorage, differenceWriter master.CacheDifferenceWriter) *master.CacheFreshnessVerifier {
+func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.TripDetailsReadService, repairer *master.TripDetailsStorage, differenceWriter master.CacheDifferenceWriter, rateLimiter master.ZoneRateLimiter) *master.CacheFreshnessVerifier {
 	if config.VerificationError != nil {
 		log.Printf("live verification disabled: %v", config.VerificationError)
 		return nil
@@ -148,13 +149,14 @@ func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.
 	}
 
 	verifier, err := master.NewCacheFreshnessVerifier(bitsClient, readService, differenceWriter,
-		repairer, config.Verification.MaxConcurrent, log.Default())
+		repairer, rateLimiter, config.Verification.MaxConcurrent, log.Default())
 	if err != nil {
 		log.Printf("live verification disabled: %v", err)
 		return nil
 	}
-	log.Printf("live verification enabled: max_concurrent=%d http_timeout=%s recording=%t repair=%t credentials=request",
+	log.Printf("live verification enabled: max_concurrent=%d http_timeout=%s rate_limit=%d/%s recording=%t repair=%t credentials=request",
 		config.Verification.MaxConcurrent, config.Verification.HTTPTimeout,
+		config.Verification.RateLimit.Default.Hits, config.Verification.RateLimit.Default.Window,
 		differenceWriter != nil, repairer != nil)
 	return verifier
 }
@@ -172,6 +174,15 @@ func newMasterServices(config master.RuntimeConfig) (masterServices, error) {
 	})
 	if err != nil {
 		return masterServices{}, err
+	}
+	var rateLimiter master.ZoneRateLimiter
+	if config.Verification != nil && config.Verification.RateLimit.Enabled() {
+		limiter, limiterErr := dragonfly.NewZoneRateLimiter(cache, config.Verification.RateLimit)
+		if limiterErr != nil {
+			_ = cache.Close()
+			return masterServices{}, limiterErr
+		}
+		rateLimiter = limiter
 	}
 	cassandraConfig := cassandra.Config{
 		Hosts: config.Storage.Cassandra.Hosts, Port: config.Storage.Cassandra.Port,
@@ -208,6 +219,7 @@ func newMasterServices(config master.RuntimeConfig) (masterServices, error) {
 		metadata:    metadata,
 		metrix:      metrix,
 		differences: differences,
+		rateLimiter: rateLimiter,
 		close: func() {
 			if differences != nil {
 				differences.Close()

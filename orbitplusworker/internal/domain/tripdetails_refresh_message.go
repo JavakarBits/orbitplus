@@ -4,6 +4,7 @@ package domain
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // TripDetailsRefreshMessage is the durable RabbitMQ payload for one direct
@@ -41,21 +42,45 @@ func (message TripDetailsRefreshMessage) Validate() error {
 
 	switch message.ActionType {
 	case ActionSearch, ActionSearchBusMap:
-		return requireFields(message.ActionType,
+		if err := requireFields(message.ActionType,
 			field{name: "fromCode", value: message.FromCode},
 			field{name: "toCode", value: message.ToCode},
 			field{name: "tripDate", value: message.TripDate},
-		)
+		); err != nil {
+			return err
+		}
+		return validateCurrentOrFutureDate("tripDate", message.TripDate)
 	case ActionBusMap:
-		return requireFields(message.ActionType,
+		if err := requireFields(message.ActionType,
 			field{name: "tripCode", value: message.TripCode},
 			field{name: "fromStationCode", value: message.FromStationCode},
 			field{name: "toStationCode", value: message.ToStationCode},
 			field{name: "travelDate", value: message.TravelDate},
-		)
+		); err != nil {
+			return err
+		}
+		return validateCurrentOrFutureDate("travelDate", message.TravelDate)
 	default:
 		return fmt.Errorf("unsupported actionType: %s", message.ActionType)
 	}
+}
+
+const tripDateLayout = "2006-01-02"
+
+func validateCurrentOrFutureDate(name, value string) error {
+	value = strings.TrimSpace(value)
+	date, err := time.Parse(tripDateLayout, value)
+	if err != nil {
+		return fmt.Errorf("%s must use YYYY-MM-DD format", name)
+	}
+
+	// Compare calendar dates rather than timestamps so today's trips remain
+	// valid regardless of the current time of day.
+	today, _ := time.Parse(tripDateLayout, time.Now().Format(tripDateLayout))
+	if date.Before(today) {
+		return fmt.Errorf("%s cannot be in the past", name)
+	}
+	return nil
 }
 
 type field struct {

@@ -69,14 +69,6 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	message = parsedMessage
 	slog.Info("TripDetails refresh started", "actionType", message.ActionType, "operator", message.OperatorCode)
 
-	// Wait until the zone's rate-limit window admits this request before any
-	// BITS work. The task is never requeued: this goroutine holds the delivery
-	// and waits until the zone is eligible, then processes it. The slot is
-	// acquired once per delivery, so the bounded retries below reuse it.
-	if err := worker.awaitZoneRateLimit(ctx, message); err != nil {
-		return ExecutionResult{Status: ExecutionCancelled, Err: err}
-	}
-
 	for attempt := 1; attempt <= worker.config.MaxAttempts; attempt++ {
 		slog.Info("TripDetails refresh processing attempt started",
 			"actionType", message.ActionType,
@@ -252,7 +244,11 @@ func (worker *TripDetailsRefreshWorker) fetchTripDetails(ctx context.Context, me
 	if message.ActionType == domain.ActionSearchBusMap {
 		sourceResult, err = worker.fetchSearchAndBusMaps(ctx, message, credential)
 	} else {
-		sourceResult, err = worker.source.FetchTripDetails(ctx, BitsTripDetailsRequest{Message: message, Credential: credential})
+		// Acquire immediately before the outbound call so every actual BITS
+		// request—including retries—consumes exactly one quota slot.
+		if err = worker.awaitZoneRateLimit(ctx, message); err == nil {
+			sourceResult, err = worker.source.FetchTripDetails(ctx, BitsTripDetailsRequest{Message: message, Credential: credential})
+		}
 	}
 	if err != nil {
 		slog.Info("Bits TripDetails request completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
