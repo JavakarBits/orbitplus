@@ -359,8 +359,8 @@ func parseRateLimit(value string) (RateLimit, error) {
 		return RateLimit{}, fmt.Errorf("must have a positive hit count, e.g. 10/1m")
 	}
 	window, err := time.ParseDuration(strings.TrimSpace(windowText))
-	if err != nil || window <= 0 {
-		return RateLimit{}, fmt.Errorf("must have a positive window duration, e.g. 10/1m")
+	if err != nil || window < time.Millisecond {
+		return RateLimit{}, fmt.Errorf("must have a window duration of at least 1ms, e.g. 10/1m")
 	}
 	return RateLimit{Hits: hits, Window: window}, nil
 }

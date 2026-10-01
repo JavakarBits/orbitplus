@@ -42,12 +42,13 @@ type VerifyResult struct {
 // load onto Bits.
 type CacheFreshnessVerifier struct {
 	fetcher BitsTripDetailsFetcher
-	reader   *TripDetailsReadService
-	writer   CacheDifferenceWriter
+	reader  *TripDetailsReadService
+	writer  CacheDifferenceWriter
 	// repairer overwrites the cached copy with the live copy after a difference.
 	// It is the same storage path the Worker callback uses, so the repaired
 	// documents are split and indexed identically.
-	repairer *TripDetailsStorage
+	repairer    *TripDetailsStorage
+	rateLimiter ZoneRateLimiter
 	// slots is a counting semaphore. A send acquires, a receive releases.
 	slots  chan struct{}
 	now    func() time.Time
@@ -62,6 +63,7 @@ func NewCacheFreshnessVerifier(
 	reader *TripDetailsReadService,
 	writer CacheDifferenceWriter,
 	repairer *TripDetailsStorage,
+	rateLimiter ZoneRateLimiter,
 	maxConcurrent int,
 	logger *log.Logger,
 ) (*CacheFreshnessVerifier, error) {
@@ -75,13 +77,14 @@ func NewCacheFreshnessVerifier(
 		logger = log.Default()
 	}
 	return &CacheFreshnessVerifier{
-		fetcher:  fetcher,
-		reader:   reader,
-		writer:   writer,
-		repairer: repairer,
-		slots:    make(chan struct{}, maxConcurrent),
-		now:      time.Now,
-		logger:   logger,
+		fetcher:     fetcher,
+		reader:      reader,
+		writer:      writer,
+		repairer:    repairer,
+		rateLimiter: rateLimiter,
+		slots:       make(chan struct{}, maxConcurrent),
+		now:         time.Now,
+		logger:      logger,
 	}, nil
 }
 
@@ -107,6 +110,21 @@ func (verifier *CacheFreshnessVerifier) Verify(ctx context.Context, lookup BitsL
 		verifier.logger.Printf("live verification completed: remote_addr=%q action=%s operator=%q outcome=%s",
 			remoteAddress, lookup.Action, lookup.OperatorCode, domain.OutcomeCredentialUnavailable)
 		return VerifyResult{Outcome: domain.OutcomeCredentialUnavailable}, ErrOperatorCredentialUnavailable
+	}
+
+	if verifier.rateLimiter != nil {
+		allowed, retryAfter, err := verifier.rateLimiter.Acquire(ctx, lookup.BaseURL)
+		if err != nil {
+			// Match Worker behavior: a Dragonfly runtime problem must not make all
+			// live reads unavailable. Concurrency limiting still remains active.
+			verifier.logger.Printf("live verification rate-limit check failed; allowing request: action=%s operator=%q zone=%q",
+				lookup.Action, lookup.OperatorCode, lookup.BaseURL)
+		} else if !allowed {
+			<-verifier.slots
+			verifier.logger.Printf("live verification rejected: remote_addr=%q action=%s operator=%q zone=%q outcome=RATE_LIMITED retry_after=%s",
+				remoteAddress, lookup.Action, lookup.OperatorCode, lookup.BaseURL, retryAfter)
+			return VerifyResult{}, &ZoneRateLimitError{RetryAfter: retryAfter}
+		}
 	}
 
 	result, fetchErr := verifier.fetcher.FetchTripDetails(ctx, lookup)

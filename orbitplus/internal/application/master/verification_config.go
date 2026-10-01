@@ -21,6 +21,8 @@ const (
 	defaultVerificationMaxConcurrent = 4
 )
 
+var defaultMasterBitsRateLimit = RateLimit{Hits: 10, Window: time.Minute}
+
 // VerificationConfig holds the settings enabling live Bits verification.
 //
 // It carries neither credentials nor an endpoint. Credentials and the zone
@@ -29,6 +31,7 @@ const (
 type VerificationConfig struct {
 	HTTPTimeout   time.Duration
 	MaxConcurrent int
+	RateLimit     RateLimitPolicy
 }
 
 // loadVerificationConfig reads the live verification tuning group.
@@ -63,6 +66,19 @@ func loadVerificationConfig(_ AppEnvironment, storage *StorageConfig) (*Verifica
 		maxConcurrent = parsed
 	}
 
+	rateLimit := defaultMasterBitsRateLimit
+	if rawRateLimit := strings.TrimSpace(os.Getenv("MASTER_BITS_RATE_LIMIT")); rawRateLimit != "" {
+		parsed, err := parseMasterRateLimit(rawRateLimit)
+		if err != nil {
+			return nil, fmt.Errorf("MASTER_BITS_RATE_LIMIT %w", err)
+		}
+		rateLimit = parsed
+	}
+	rateLimitOverrides, err := parseMasterRateLimitOverrides(strings.TrimSpace(os.Getenv("MASTER_BITS_RATE_LIMIT_OVERRIDES")))
+	if err != nil {
+		return nil, err
+	}
+
 	if storage == nil {
 		return nil, fmt.Errorf("live verification requires Cassandra/storage configuration (CASSANDRA_HOSTS)")
 	}
@@ -70,7 +86,51 @@ func loadVerificationConfig(_ AppEnvironment, storage *StorageConfig) (*Verifica
 	return &VerificationConfig{
 		HTTPTimeout:   timeout,
 		MaxConcurrent: maxConcurrent,
+		RateLimit: RateLimitPolicy{
+			Default:   rateLimit,
+			Overrides: rateLimitOverrides,
+		},
 	}, nil
+}
+
+func parseMasterRateLimit(value string) (RateLimit, error) {
+	hitsText, windowText, found := strings.Cut(strings.TrimSpace(value), "/")
+	if !found {
+		return RateLimit{}, fmt.Errorf("must be in hits/window form, e.g. 10/1m")
+	}
+	hits, err := strconv.Atoi(strings.TrimSpace(hitsText))
+	if err != nil || hits <= 0 {
+		return RateLimit{}, fmt.Errorf("must have a positive hit count, e.g. 10/1m")
+	}
+	window, err := time.ParseDuration(strings.TrimSpace(windowText))
+	if err != nil || window < time.Millisecond {
+		return RateLimit{}, fmt.Errorf("must have a window duration of at least 1ms, e.g. 10/1m")
+	}
+	return RateLimit{Hits: hits, Window: window}, nil
+}
+
+func parseMasterRateLimitOverrides(value string) (map[string]RateLimit, error) {
+	overrides := make(map[string]RateLimit)
+	if value == "" {
+		return overrides, nil
+	}
+	for _, pair := range strings.Split(value, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		separator := strings.LastIndex(pair, "=")
+		if separator <= 0 || separator == len(pair)-1 {
+			return nil, fmt.Errorf("MASTER_BITS_RATE_LIMIT_OVERRIDES must be comma-separated zoneURL=hits/window pairs")
+		}
+		zone := strings.TrimSpace(pair[:separator])
+		limit, err := parseMasterRateLimit(pair[separator+1:])
+		if err != nil {
+			return nil, fmt.Errorf("MASTER_BITS_RATE_LIMIT_OVERRIDES %w", err)
+		}
+		overrides[zone] = limit
+	}
+	return overrides, nil
 }
 
 // ValidateBitsURL permits https in every environment and http only outside

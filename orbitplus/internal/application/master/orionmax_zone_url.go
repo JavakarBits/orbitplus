@@ -1,6 +1,9 @@
 package master
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 var zoneURLByCode = map[string]string{
 	"bits":         "http://app.ezeebits.com",
@@ -9,6 +12,7 @@ var zoneURLByCode = map[string]string{
 	"ybmbits":      "http://app.ybmtravels.in",
 	"sbltbits":     "http://app.sbltbus.com",
 	"svrtbits":     "http://app.srivenkataramanatravels.co.in",
+	"parveenbits":  "http://app.parveentravels.in",
 	"rmtbits":      "http://app.rathimeenatravels.in",
 	"gotourbits":   "http://app.gotourtravels.com",
 	"vinayagabits": "http://app.vinayagaselvamtravels.in",
@@ -27,6 +31,12 @@ func zoneURLFor(zoneCode string) (string, bool) {
 	zoneCode, exists := NormalizeZoneCode(zoneCode)
 	if !exists {
 		return "", false
+	}
+	// Deployments can align OrbitPlus live reads with the same BITS environment
+	// used by Java fallback/block/confirm without changing production defaults.
+	// Example: BITS_ZONE_BITS_URL=https://dev-stage.ezeebits.in
+	if override := strings.TrimSpace(os.Getenv("BITS_ZONE_" + strings.ToUpper(zoneCode) + "_URL")); override != "" {
+		return strings.TrimRight(override, "/"), true
 	}
 	return zoneURLByCode[zoneCode], true
 }

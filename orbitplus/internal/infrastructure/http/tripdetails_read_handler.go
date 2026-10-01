@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"orbitplusmaster/internal/application/master"
@@ -143,7 +145,15 @@ func (handler *TripDetailsReadHandler) serveLive(response http.ResponseWriter, r
 		return
 	}
 	result, err := handler.verifier.Verify(request.Context(), lookup, request.RemoteAddr)
+	var rateLimitErr *master.ZoneRateLimitError
 	switch {
+	case errors.As(err, &rateLimitErr):
+		retryAfter := int64(math.Ceil(rateLimitErr.RetryAfter.Seconds()))
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		response.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))
+		writeJSONStatus(response, http.StatusTooManyRequests, 0, "BITS zone rate limit exceeded")
 	case errors.Is(err, master.ErrVerificationBusy):
 		writeJSONStatus(response, http.StatusTooManyRequests, 0, "Live verification busy")
 	case errors.Is(err, master.ErrOperatorCredentialUnavailable):

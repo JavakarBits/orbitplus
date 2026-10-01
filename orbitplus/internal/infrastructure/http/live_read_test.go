@@ -35,7 +35,7 @@ const searchRoutePattern = "GET /orbitplus/api/3.0/json/{operatorCode}/{username
 
 func newLiveHandler(t *testing.T, fetcher master.BitsTripDetailsFetcher) *TripDetailsReadHandler {
 	t.Helper()
-	verifier, err := master.NewCacheFreshnessVerifier(fetcher, nil, nil, nil, 1, log.Default())
+	verifier, err := master.NewCacheFreshnessVerifier(fetcher, nil, nil, nil, nil, 1, log.Default())
 	if err != nil {
 		t.Fatalf("NewCacheFreshnessVerifier: %v", err)
 	}
@@ -86,9 +86,9 @@ func TestLiveReadUsesPathCredentialAndZone(t *testing.T) {
 // call rather than becoming a gateway error after a pointless attempt.
 func TestLiveReadRejectsInvalidLiveRequest(t *testing.T) {
 	for name, requestPath := range map[string]string{
-		"absent_zone": "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0",
-		"unknown_zone": "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=nosuchzone",
-		"blank_zone":   "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=",
+		"absent_zone":      "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0",
+		"unknown_zone":     "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=nosuchzone",
+		"blank_zone":       "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=",
 		"repeated_zone":    "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=bits&zone=r2bits",
 		"undecodable_zone": "/orbitplus/api/3.0/json/bits/u/t/search/CITY_A/CITY_B/2026-08-21?cacheFlag=0&zone=%zz",
 	} {

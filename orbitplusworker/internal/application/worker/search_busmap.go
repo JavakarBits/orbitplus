@@ -29,6 +29,11 @@ type searchBusMapIdentifiers struct {
 func (worker *TripDetailsRefreshWorker) fetchSearchAndBusMaps(ctx context.Context, message domain.TripDetailsRefreshMessage, credential BitsOperatorCredential) (BitsTripDetailsResponse, error) {
 	searchMessage := message
 	searchMessage.ActionType = domain.ActionSearch
+	// Search is the first outbound call in this workflow and consumes its own
+	// slot; each BusMap below does the same.
+	if err := worker.awaitZoneRateLimit(ctx, message); err != nil {
+		return BitsTripDetailsResponse{}, err
+	}
 	searchResponse, err := worker.source.FetchTripDetails(ctx, BitsTripDetailsRequest{Message: searchMessage, Credential: credential})
 	if err != nil {
 		return BitsTripDetailsResponse{}, err
@@ -48,8 +53,7 @@ func (worker *TripDetailsRefreshWorker) fetchSearchAndBusMaps(ctx context.Contex
 			return BitsTripDetailsResponse{}, fmt.Errorf("Bits Search entry %d is invalid: %w", index, err)
 		}
 
-		// The delivery-level rate-limit slot acquired by Handle covers Search.
-		// Every additional BusMap GET consumes its own slot so a fan-out cannot
+		// Every BusMap GET consumes its own slot so fan-out and retries cannot
 		// bypass the per-zone request quota.
 		if err := worker.awaitZoneRateLimit(ctx, message); err != nil {
 			return BitsTripDetailsResponse{}, err
