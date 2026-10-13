@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"orbitplusmaster/internal/domain"
@@ -12,9 +14,11 @@ import (
 
 const InventoryRefreshRoutingKey = "tripdetails.refresh"
 
-// InventoryEventPublisher publishes one prepared Worker job.
+// InventoryEventPublisher publishes one prepared Worker job. The priority
+// variant lets the receiver rank jobs by activity type; higher is served first.
 type InventoryEventPublisher interface {
 	PublishInventoryEvent(context.Context, string, []byte) error
+	PublishInventoryEventWithPriority(context.Context, string, []byte, uint8) error
 }
 
 // OrionmaxInventoryEventService receives and converts Orionmax inventory events.
@@ -24,11 +28,59 @@ type OrionmaxInventoryEventService struct {
 	schedules InventoryScheduleReader
 	metrix    QueueMetrixStorage
 	operators OperatorRegistry
+	// inFlight deduplicates concurrent/rapid duplicate inventory items: a route
+	// already being queued is not queued again until it finishes. The key is the
+	// route identity, not the per-event refid, so repeat events for the same
+	// trip collapse into one in-flight job.
+	inFlightMu sync.Mutex
+	inFlight   map[string]struct{}
 }
 
 // NewOrionmaxInventoryEventService constructs an inventory-event receiver.
 func NewOrionmaxInventoryEventService(publisher InventoryEventPublisher, schedules InventoryScheduleReader, metrix QueueMetrixStorage, operators OperatorRegistry) *OrionmaxInventoryEventService {
-	return &OrionmaxInventoryEventService{logger: log.Default(), publisher: publisher, schedules: schedules, metrix: metrix, operators: operators}
+	return &OrionmaxInventoryEventService{logger: log.Default(), publisher: publisher, schedules: schedules, metrix: metrix, operators: operators, inFlight: make(map[string]struct{})}
+}
+
+// WithLogger directs inventory-change logging to a dedicated logger (e.g. its
+// own log file) instead of the process default. A nil logger is ignored so the
+// default remains in place.
+func (service *OrionmaxInventoryEventService) WithLogger(logger *log.Logger) *OrionmaxInventoryEventService {
+	if logger != nil {
+		service.logger = logger
+	}
+	return service
+}
+
+// dedupKey identifies one route+trip so duplicate inventory items collapse.
+func dedupKey(zone string, item orionmaxInventoryItem) string {
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(zone)),
+		strings.TrimSpace(item.OperatorCode),
+		strings.TrimSpace(item.Source),
+		strings.TrimSpace(item.Destination),
+		strings.TrimSpace(item.DOJ),
+		strings.TrimSpace(item.TripCode),
+	}, "|")
+}
+
+// claimInFlight marks a route as being queued. It returns false when another
+// job for the same route is already in flight, so the caller can skip it.
+func (service *OrionmaxInventoryEventService) claimInFlight(key string) bool {
+	service.inFlightMu.Lock()
+	defer service.inFlightMu.Unlock()
+	if _, exists := service.inFlight[key]; exists {
+		return false
+	}
+	service.inFlight[key] = struct{}{}
+	return true
+}
+
+// releaseInFlight clears the route once its job has reached a terminal state
+// (queued, dead, or failed), so a later genuine change can be queued again.
+func (service *OrionmaxInventoryEventService) releaseInFlight(key string) {
+	service.inFlightMu.Lock()
+	defer service.inFlightMu.Unlock()
+	delete(service.inFlight, key)
 }
 
 // ReceiveInventoryChange logs, registers operators, and publishes active jobs.
@@ -60,28 +112,49 @@ func (service *OrionmaxInventoryEventService) ReceiveInventoryChange(ctx context
 		if metric.ReferenceID == "" {
 			return ErrInvalidInventoryEvent
 		}
+
+		// Skip when the same route is already being queued, so a duplicate
+		// inventory item does not produce a second worker job.
+		key := dedupKey(event.Zone, item)
+		if !service.claimInFlight(key) {
+			service.logger.Printf("Orionmax inventory change skipped as duplicate: operator_code=%q zone=%q", item.OperatorCode, event.Zone)
+			continue
+		}
+
 		job, err := buildInventoryRefreshJob(ctx, actionType, item, service.schedules, metric)
 		if err != nil {
 			if saveErr := service.metrix.SaveReceived(ctx, metric); saveErr != nil {
+				service.releaseInFlight(key)
 				return fmt.Errorf("save queue metrix record: %w", saveErr)
 			}
 			service.markDead(ctx, metric, err)
+			service.releaseInFlight(key)
 			return err
 		}
 		if err := service.metrix.SaveReceived(ctx, job.Metric); err != nil {
+			service.releaseInFlight(key)
 			return fmt.Errorf("save queue metrix record: %w", err)
 		}
-		if err := service.publisher.PublishInventoryEvent(ctx, job.Metric.ReferenceID, job.Payload); err != nil {
+		priority := priorityForActivityType(activityType)
+		service.logger.Printf("RabbitMQ publish started: reference_id=%q operator_code=%q zone=%q action=%q activity_type=%q priority=%d", job.Metric.ReferenceID, item.OperatorCode, event.Zone, actionType, activityType, priority)
+		if err := service.publisher.PublishInventoryEventWithPriority(ctx, job.Metric.ReferenceID, job.Payload, priority); err != nil {
+			service.logger.Printf("RabbitMQ publish failed: reference_id=%q operator_code=%q error=%v", job.Metric.ReferenceID, item.OperatorCode, err)
 			service.markDead(ctx, job.Metric, err)
+			service.releaseInFlight(key)
 			return err
 		}
+		service.logger.Printf("RabbitMQ publish succeeded: reference_id=%q operator_code=%q zone=%q", job.Metric.ReferenceID, item.OperatorCode, event.Zone)
 		now = time.Now().UTC()
 		job.Metric.QueueStatus = domain.QueueStatusQueued
 		job.Metric.QueuedAt = now
 		job.Metric.UpdatedAt = now
 		if err := service.metrix.MarkQueued(ctx, job.Metric); err != nil {
+			service.releaseInFlight(key)
 			return fmt.Errorf("mark queue metrix queued: %w", err)
 		}
+		// The job is now safely on the broker. Release the route so a later
+		// genuine change for it can be queued again.
+		service.releaseInFlight(key)
 	}
 	return nil
 }

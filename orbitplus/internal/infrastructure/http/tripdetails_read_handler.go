@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"orbitplusmaster/internal/application/master"
@@ -16,14 +18,21 @@ type TripDetailsReadHandler struct {
 	// verifier is nil when live verification is unconfigured, in which case a
 	// Cache_Flag value of 0 reports the feature as unavailable rather than
 	// silently serving the cached copy.
-	verifier *master.CacheFreshnessVerifier
-	logger   *log.Logger
+	verifier     *master.CacheFreshnessVerifier
+	searchLogger *log.Logger
+	busmapLogger *log.Logger
 }
 
-// NewTripDetailsReadHandler constructs a read handler using the process logger.
-// A nil verifier disables the live path and leaves the cached path untouched.
-func NewTripDetailsReadHandler(service *master.TripDetailsReadService, verifier *master.CacheFreshnessVerifier) *TripDetailsReadHandler {
-	return &TripDetailsReadHandler{service: service, verifier: verifier, logger: log.Default()}
+// NewTripDetailsReadHandler constructs a read handler with dedicated loggers
+// for Search and BusMap calls that write to separate log files.
+func NewTripDetailsReadHandler(service *master.TripDetailsReadService, verifier *master.CacheFreshnessVerifier, searchLogger *log.Logger, busmapLogger *log.Logger) *TripDetailsReadHandler {
+	if searchLogger == nil {
+		searchLogger = log.Default()
+	}
+	if busmapLogger == nil {
+		busmapLogger = log.Default()
+	}
+	return &TripDetailsReadHandler{service: service, verifier: verifier, searchLogger: searchLogger, busmapLogger: busmapLogger}
 }
 
 func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter, request *http.Request) {
@@ -34,6 +43,10 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 		FromCode:     request.PathValue("fromCode"),
 		ToCode:       request.PathValue("toCode"),
 		TripDate:     request.PathValue("tripDate"),
+		// Carried for a Cold cache refresh (cacheFlag=1 reads that find stale
+		// data fetch BITS using these path credentials). Unused by Hot/Warm.
+		Username: request.PathValue("username"),
+		APIToken: request.PathValue("apiToken"),
 	}
 	// One combined rejection so the response cannot depend on which of the
 	// validations happens to run first.
@@ -48,7 +61,7 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 		if zoneErr != nil || !resolved || !master.ValidLiveSearchLookup(lookup, username, apiToken) {
 			// An unknown or absent zone, or missing path credentials, is the
 			// caller's error, not an upstream failure.
-			handler.logger.Printf("live read rejected: action=SEARCH operator=%q reason=invalid_live_request",
+			handler.searchLogger.Printf("live read rejected: action=SEARCH operator=%q reason=invalid_live_request",
 				lookup.OperatorCode)
 			writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
 			return
@@ -69,11 +82,15 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 		writeJSONStatus(response, http.StatusInternalServerError, 0, "Internal server error")
 		return
 	}
+	handler.searchLogger.Printf("search read started: operator=%q from=%q to=%q date=%q",
+		lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 	data, err := handler.service.Search(request.Context(), lookup)
 	if err != nil {
-		handler.writeReadError(response, "search", err)
+		handler.writeSearchError(response, err)
 		return
 	}
+	handler.searchLogger.Printf("search read completed: operator=%q from=%q to=%q date=%q results=%d",
+		lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate, len(data))
 	writeJSONData(response, data)
 }
 
@@ -86,6 +103,9 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 		FromCode:     request.PathValue("fromStationCode"),
 		ToCode:       request.PathValue("toStationCode"),
 		TripDate:     request.PathValue("travelDate"),
+		// Carried for a Cold cache refresh. Unused by Hot/Warm.
+		Username: request.PathValue("username"),
+		APIToken: request.PathValue("apiToken"),
 	}
 	// One combined rejection so the response cannot depend on which of the
 	// validations happens to run first.
@@ -98,7 +118,7 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 		apiToken := request.PathValue("apiToken")
 		baseURL, resolved := master.ZoneBitsBaseURL(zoneCode)
 		if zoneErr != nil || !resolved || !master.ValidLiveBusMapLookup(lookup, username, apiToken) {
-			handler.logger.Printf("live read rejected: action=BUSMAP operator=%q reason=invalid_live_request",
+			handler.busmapLogger.Printf("live read rejected: action=BUSMAP operator=%q reason=invalid_live_request",
 				lookup.OperatorCode)
 			writeJSONStatus(response, http.StatusBadRequest, 0, "Invalid request")
 			return
@@ -120,11 +140,15 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 		writeJSONStatus(response, http.StatusInternalServerError, 0, "Internal server error")
 		return
 	}
+	handler.busmapLogger.Printf("busmap read started: operator=%q trip=%q from=%q to=%q date=%q",
+		lookup.OperatorCode, lookup.TripCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 	data, err := handler.service.BusMap(request.Context(), lookup)
 	if err != nil {
-		handler.writeReadError(response, "busmap", err)
+		handler.writeBusmapError(response, err)
 		return
 	}
+	handler.busmapLogger.Printf("busmap read completed: operator=%q trip=%q from=%q to=%q date=%q bytes=%d",
+		lookup.OperatorCode, lookup.TripCode, lookup.FromCode, lookup.ToCode, lookup.TripDate, len(data))
 	writeJSONData(response, data)
 }
 
@@ -138,12 +162,24 @@ func (handler *TripDetailsReadHandler) ServeInvalidRoute(response http.ResponseW
 // asked for live data must never receive cache data labelled as live, which is
 // the confusion this feature exists to remove.
 func (handler *TripDetailsReadHandler) serveLive(response http.ResponseWriter, request *http.Request, lookup master.BitsLookup) {
+	callLogger := handler.searchLogger
+	if lookup.Action == master.BitsActionBusMap {
+		callLogger = handler.busmapLogger
+	}
 	if handler.verifier == nil {
 		writeJSONStatus(response, http.StatusServiceUnavailable, 0, "Live verification is not configured")
 		return
 	}
 	result, err := handler.verifier.Verify(request.Context(), lookup, request.RemoteAddr)
+	var rateLimitErr *master.ZoneRateLimitError
 	switch {
+	case errors.As(err, &rateLimitErr):
+		retryAfter := int64(math.Ceil(rateLimitErr.RetryAfter.Seconds()))
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		response.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))
+		writeJSONStatus(response, http.StatusTooManyRequests, 0, "BITS zone rate limit exceeded")
 	case errors.Is(err, master.ErrVerificationBusy):
 		writeJSONStatus(response, http.StatusTooManyRequests, 0, "Live verification busy")
 	case errors.Is(err, master.ErrOperatorCredentialUnavailable):
@@ -154,12 +190,16 @@ func (handler *TripDetailsReadHandler) serveLive(response http.ResponseWriter, r
 		// route. That is the same answer the cached path gives when it finds
 		// nothing, so it gets the same status rather than a gateway error the
 		// caller would retry. The specific code is logged, never returned.
+		callLogger.Printf("live read: trip details not found action=%s operator=%q reason=source_rejected",
+			lookup.Action, lookup.OperatorCode)
 		writeJSONStatus(response, http.StatusNotFound, 0, "Trip details not found")
 	case err != nil:
 		// The specific reason is logged, never returned, so no upstream status
 		// code or body can reach the caller.
 		writeJSONStatus(response, http.StatusBadGateway, 0, "Live source unavailable")
 	case result.DataEmpty:
+		callLogger.Printf("live read: trip details not found action=%s operator=%q reason=empty_data",
+			lookup.Action, lookup.OperatorCode)
 		writeJSONStatus(response, http.StatusNotFound, 0, "Trip details not found")
 	default:
 		// Reusing writeJSONData keeps the envelope, member order, datetime
@@ -169,12 +209,21 @@ func (handler *TripDetailsReadHandler) serveLive(response http.ResponseWriter, r
 	}
 }
 
-func (handler *TripDetailsReadHandler) writeReadError(response http.ResponseWriter, operation string, err error) {
+func (handler *TripDetailsReadHandler) writeSearchError(response http.ResponseWriter, err error) {
+	handler.writeReadError(response, handler.searchLogger, "search", err)
+}
+
+func (handler *TripDetailsReadHandler) writeBusmapError(response http.ResponseWriter, err error) {
+	handler.writeReadError(response, handler.busmapLogger, "busmap", err)
+}
+
+func (handler *TripDetailsReadHandler) writeReadError(response http.ResponseWriter, callLogger *log.Logger, operation string, err error) {
 	if errors.Is(err, master.ErrTripDetailsNotFound) {
+		callLogger.Printf("%s read: trip details not found", operation)
 		writeJSONStatus(response, http.StatusNotFound, 0, "Trip details not found")
 		return
 	}
-	handler.logger.Printf("TripDetails %s read failed", operation)
+	callLogger.Printf("TripDetails %s read failed: %v", operation, err)
 	writeJSONStatus(response, http.StatusInternalServerError, 0, "Internal server error")
 }
 

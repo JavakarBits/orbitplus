@@ -1,4 +1,4 @@
-import { adminPortalService, ADMIN_ENDPOINTS } from "/orbitplus/admin/portal-service.js";
+import { adminPortalService, ADMIN_ENDPOINTS } from "/orbitplus/admin/portal-service.js?v=8";
 
 const mount = document.getElementById("admin-portal");
 const routes = [
@@ -12,6 +12,8 @@ const routes = [
   { id: "dragonfly", label: "Dragonfly (Cache)", icon: "◆" },
   { id: "cassandra", label: "Cassandra (Metadata)", icon: "▤" },
   { id: "operators", label: "Operators", icon: "♙" },
+  { id: "memory", label: "Memory", icon: "▣" },
+  { id: "logs", label: "Logs", icon: "▦" },
   { id: "reports", label: "Reports", icon: "▥" }
 ];
 const SERIES = ["#6c5ce7", "#3f7ff0", "#16a06a", "#dd9016", "#d94b5c", "#1899b0", "#a05bd0", "#7b879e"];
@@ -44,7 +46,7 @@ function top(current) {
   const page = routes.find((item) => item.id === current);
   const subtitle = current === "dashboard" ? "Live overview of the TripDetails refresh system" : "Live data where a backend source exists";
   const failures = live("queueMetrics") ? (data("queueMetrics").recentFailures || []).length : 0;
-  return `<header class="top"><div class="top-l"><button class="burger" id="burger" type="button" title="Navigation">☰</button><div><h1>${esc(page?.label || "Dashboard")}</h1><p>${esc(subtitle)}</p></div></div><div class="top-r"><span class="pill">◷ Last 24 hours</span><button class="bell" id="bell" type="button" title="Failed records in sample">⌁${failures ? `<span>${failures}</span>` : ""}</button><span class="user"><i>A</i>admin</span></div></header>`;
+  return `<header class="top"><div class="top-l"><button class="burger" id="burger" type="button" title="Navigation">☰</button><div><h1>${esc(page?.label || "Dashboard")}</h1><p>${esc(subtitle)}</p></div></div><div class="top-r"><span class="pill">◷ Last 24 hours</span><button class="bell" id="bell" type="button" title="Failed records in sample">⌁${failures ? `<span>${failures}</span>` : ""}</button><div class="user-menu"><button class="user" id="user-trigger" type="button" aria-haspopup="true"><i>A</i><span class="user-meta"><b>Admin</b><small>OrbitPlus</small></span><em class="caret">▾</em></button><div class="user-dropdown" id="user-dropdown" role="menu"><nav class="user-dropdown-list"><button type="button" id="logout-item" role="menuitem" class="danger"><i>⎋</i>Logout</button></nav></div></div></div></header>`;
 }
 
 function kpis() {
@@ -100,12 +102,15 @@ function workerStatus(limit) {
   if (!live("rabbitmq")) return na("rabbitmq");
   const consumers = data("rabbitmq").consumers || [];
   if (!consumers.length) return `<div class="na-box"><div>RabbitMQ reported no consumers in the configured vhost.</div></div>`;
-  const state = (value) => /up|running|active/i.test(value || "") ? ["Healthy", ""] : /wait|idle/i.test(value || "") ? ["Idle", "warn"] : [value || "Unknown", "na"];
+  // A consumer that is up or momentarily blocked/busy (prefetch in-flight) is a
+  // live worker. Only waiting/idle standby consumers are not actively healthy.
+  const isHealthy = (value) => /up|running|active|blocked|busy|single/i.test(value || "");
+  const state = (value) => isHealthy(value) ? ["Healthy", ""] : /wait|idle/i.test(value || "") ? ["Idle", "warn"] : [value || "Unknown", "na"];
   const rows = consumers.slice(0, limit || consumers.length).map((item) => {
     const [label, tone] = state(item.status);
     return `<tr><td title="${esc(item.tag)}">${esc(item.tag || item.connection)}</td><td>${chip(label, tone)}</td><td>${esc(item.queue)}</td><td>${num(item.prefetchCount)}</td><td>${esc(item.user)}</td></tr>`;
   }).join("");
-  const healthy = consumers.filter((item) => /up|running|active/i.test(item.status || "")).length;
+  const healthy = consumers.filter((item) => isHealthy(item.status)).length;
   return `<div class="t-wrap"><table><thead><tr><th>Consumer tag</th><th>Status</th><th>Queue</th><th>Prefetch</th><th>User</th></tr></thead><tbody>${rows}</tbody></table></div><div class="totals"><span>Total workers: <b>${num(consumers.length)}</b></span><span>Healthy: <b>${num(healthy)}</b></span><span>Other: <b>${num(consumers.length - healthy)}</b></span></div><p class="note">Processed and failed per-worker counters are not exposed by RabbitMQ and are therefore not shown.</p>`;
 }
 
@@ -317,6 +322,182 @@ async function showCacheValue(key) {
   }
 }
 
+const memory = { state: "idle", message: "", data: null };
+let memoryController;
+let memoryTimer;
+
+const memBytes = (value) => { if (value === null || value === undefined) return "—"; const n = Number(value); if (n < 1024) return `${n} B`; const units = ["KB", "MB", "GB", "TB"]; let size = n / 1024, unit = 0; while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; } return `${size.toFixed(1)} ${units[unit]}`; };
+const memDuration = (seconds) => { if (seconds === null || seconds === undefined) return "—"; const total = Number(seconds); if (total < 60) return `${total} sec`; const m = Math.floor(total / 60); if (m < 60) return `${m} min`; const h = Math.floor(m / 60); return `${h} hr ${m % 60} min`; };
+
+function stopMemoryAutoRefresh() {
+  if (memoryTimer) { clearInterval(memoryTimer); memoryTimer = undefined; }
+}
+
+function memoryCards() {
+  const info = memory.data;
+  if (!info) return "";
+  const heapUsed = Number(info.heapAllocBytes || 0);
+  const heapSys = Number(info.heapSystemBytes || 0);
+  const heapPercent = heapSys > 0 ? Math.min(100, heapUsed / heapSys * 100) : 0;
+  const cards = [
+    ["▣", "Heap in use", memBytes(info.heapAllocBytes), "Live heap objects", "t-violet"],
+    ["◆", "Heap reserved", memBytes(info.heapSystemBytes), "Heap obtained from OS", "t-blue"],
+    ["▦", "Process memory (Sys)", memBytes(info.goRuntimeSystemBytes), "Total Go runtime from OS", "t-cyan"],
+    ["⌗", "Heap objects", num(info.heapObjects), "Allocated live objects", "t-green"],
+    ["↻", "GC cycles", num(info.gcCycles), "Completed collections", "t-amber"],
+    ["⚙", "Goroutines", num(info.goroutines), "Active Go routines", "t-violet"],
+    ["⊡", "Next GC target", memBytes(info.nextGCTargetBytes), "Heap size that triggers GC", "t-blue"],
+    ["◉", "GOMAXPROCS", num(info.goMaxProcs), `${num(info.logicalCPUs)} logical CPUs`, "t-slate"],
+  ];
+  const kpiHTML = cards.map(([icon, label, value, note, tone]) => `<article class="kpi ${tone}"><i>${icon}</i><div><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div></article>`).join("");
+  const totalPauseMs = Number(info.totalGCPauseNanoseconds || 0) / 1e6;
+  const stats = [
+    ["Status", info.status || "UP"],
+    ["Go version", info.goVersion],
+    ["OS / Arch", `${info.operatingSystem || "—"} / ${info.architecture || "—"}`],
+    ["Uptime", memDuration(info.uptimeSeconds)],
+    ["Go CPU capacity", info.goCpuCapacityPercent == null ? "measuring…" : `${Number(info.goCpuCapacityPercent).toFixed(1)}%`],
+    ["Total GC pause", `${totalPauseMs.toFixed(1)} ms`],
+    ["Last GC", info.lastGCAt ? new Date(info.lastGCAt).toLocaleString() : "—"],
+  ];
+  const statHTML = stats.map(([label, value]) => `<div class="stat"><span>${esc(label)}</span><strong>${esc(value ?? "—")}</strong></div>`).join("");
+  return `<section class="kpis">${kpiHTML}</section>
+  <section class="grid g-2">
+    <article class="panel"><div class="p-head"><h2>Heap utilization</h2><span class="tag">${heapPercent.toFixed(0)}% of reserved</span></div><div class="mem-bar"><i style="width:${heapPercent}%"></i></div><p class="note">${esc(memBytes(info.heapAllocBytes))} in use of ${esc(memBytes(info.heapSystemBytes))} reserved from the OS. In-use heap is live data; reserved is what the Go runtime holds and may reuse before returning to the OS.</p></article>
+    <article class="panel"><div class="p-head"><h2>Runtime</h2><span class="tag${info.status ? "" : " na"}">${esc(info.status || "unavailable")}</span></div>${statHTML}</article>
+  </section>`;
+}
+
+function memoryBody() {
+  if (memory.state === "loading" && !memory.data) return `<div class="na-box"><div>Loading memory metrics…</div></div>`;
+  if (memory.state === "error") return `<div class="na-box"><div><b>Memory metrics unavailable</b>${esc(memory.message || "Unable to load runtime memory metrics.")}</div></div>`;
+  if (!memory.data) return `<div class="na-box"><div>No memory metrics are available yet.</div></div>`;
+  return memoryCards();
+}
+
+function memoryPage() {
+  return `<section class="panel mem-panel" id="memory-viewer"><div class="p-head"><div><h2>Go runtime memory</h2><p class="df-subtitle">Live heap, garbage-collection, and goroutine metrics for the Master process. Refreshes automatically every 5 seconds.</p></div><button class="df-refresh" id="memory-refresh" type="button">Refresh</button></div><div id="memory-body">${memoryBody()}</div></section>`;
+}
+
+function bindMemory() {
+  document.getElementById("memory-refresh")?.addEventListener("click", () => loadMemory());
+  stopMemoryAutoRefresh();
+  memoryTimer = setInterval(() => { if (route() === "memory") loadMemory(); else stopMemoryAutoRefresh(); }, 5000);
+}
+
+function paintMemoryBody() {
+  const target = document.getElementById("memory-body");
+  if (target) target.innerHTML = memoryBody();
+}
+
+async function loadMemory() {
+  memoryController?.abort();
+  const activeController = new AbortController();
+  memoryController = activeController;
+  if (!memory.data) { memory.state = "loading"; paintMemoryBody(); }
+  try {
+    const result = await adminPortalService.systemHealth({ signal: activeController.signal });
+    if (memoryController !== activeController) return;
+    memory.data = result;
+    memory.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || memoryController !== activeController) return;
+    memory.state = "error";
+    memory.message = error.message || "Unable to load runtime memory metrics.";
+  } finally {
+    if (memoryController === activeController) {
+      memoryController = undefined;
+      paintMemoryBody();
+    }
+  }
+}
+
+const logs = { files: [], state: "idle", message: "", selected: "", selectedSource: "", content: "", truncated: false, contentState: "idle", contentMessage: "", contentSize: 0 };
+let logsController;
+let logsContentController;
+
+const logSize = (value) => { const n = Number(value || 0); if (n < 1024) return `${n} B`; const units = ["KB", "MB", "GB"]; let size = n / 1024, unit = 0; while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; } return `${size.toFixed(1)} ${units[unit]}`; };
+
+function logsPage() {
+  const status = logs.state === "error" ? (logs.message || "Unable to load log files.") : logs.state === "loading" ? "Loading log files…" : `${logs.files.length} log file${logs.files.length === 1 ? "" : "s"} across the Master and Worker log directories. Newest first.`;
+  const rows = logs.files.map((file) => `<tr${file.name === logs.selected && (file.source || "") === logs.selectedSource ? ' class="log-row-active"' : ""}><td>${chip(file.source || "—", (file.source === "worker") ? "" : "na")}</td><td class="log-name">${esc(file.name)}</td><td>${esc(logSize(file.sizeBytes))}</td><td>${esc(file.modifiedUtc)} UTC</td><td><button class="log-show" type="button" data-log-name="${esc(file.name)}" data-log-source="${esc(file.source || "")}">View</button></td></tr>`).join("");
+  const empty = logs.state === "loading" && !logs.files.length ? "Loading log files…" : logs.state === "error" ? (logs.message || "Unable to load log files. Check the log directory and try again.") : "No log files found. A service writes logs once it starts with file logging enabled.";
+  const viewerTitle = logs.contentState === "loading" ? "Loading log file…" : logs.contentState === "error" ? "Unable to load log file" : `${logs.selectedSource ? esc(logs.selectedSource) + " · " : ""}${esc(logs.selected)}`;
+  const viewer = logs.contentState === "idle" ? "" : `<section class="log-viewer"><div class="log-viewer-head"><strong>${viewerTitle}</strong>${logs.contentState === "done" ? `<span>${esc(logSize(logs.contentSize))}${logs.truncated ? " · showing last 512 KB" : ""}</span>` : ""}</div>${logs.contentState === "done" ? `<pre class="log-pre">${esc(logs.content) || "<em>(empty file)</em>"}</pre>` : ""}${logs.contentState === "error" ? `<p class="cm-error">${esc(logs.contentMessage)}</p>` : ""}</section>`;
+  return `<section class="panel log-panel" id="logs-viewer"><div class="p-head"><div><h2>Application logs</h2><p class="df-subtitle">Browse log files written by the Master and Worker services. Select a file to view its most recent lines.</p></div><button class="df-refresh" id="logs-refresh" type="button">Refresh</button></div><p class="df-status">${status}</p>${rows ? `<div class="t-wrap"><table><thead><tr><th>Source</th><th>File</th><th>Size</th><th>Modified</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="df-empty">${esc(empty)}</div>`}${viewer}</section>`;
+}
+
+function bindLogs() {
+  document.getElementById("logs-refresh")?.addEventListener("click", () => loadLogs(true));
+  document.querySelectorAll("[data-log-name]").forEach((button) => button.addEventListener("click", () => showLogContent(button.dataset.logName, button.dataset.logSource)));
+}
+
+function paintLogs() {
+  const target = document.getElementById("logs-viewer");
+  if (target) {
+    target.outerHTML = logsPage();
+    bindLogs();
+  }
+}
+
+async function loadLogs(reset = false) {
+  logsController?.abort();
+  const activeController = new AbortController();
+  logsController = activeController;
+  if (reset) {
+    logs.selected = "";
+    logs.selectedSource = "";
+    logs.content = "";
+    logs.contentState = "idle";
+  }
+  logs.state = "loading";
+  logs.message = "";
+  paintLogs();
+  try {
+    const result = await adminPortalService.logs({ signal: activeController.signal });
+    if (logsController !== activeController) return;
+    logs.files = Array.isArray(result.files) ? result.files : [];
+    logs.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || logsController !== activeController) return;
+    logs.state = "error";
+    logs.message = error.message || "Unable to load log files.";
+  } finally {
+    if (logsController === activeController) {
+      logsController = undefined;
+      paintLogs();
+    }
+  }
+}
+
+async function showLogContent(name, source) {
+  logsContentController?.abort();
+  const activeController = new AbortController();
+  logsContentController = activeController;
+  logs.selected = name;
+  logs.selectedSource = source || "";
+  logs.contentState = "loading";
+  logs.contentMessage = "";
+  paintLogs();
+  try {
+    const result = await adminPortalService.logContent({ name, source, signal: activeController.signal });
+    if (logsContentController !== activeController) return;
+    logs.content = result.content || "";
+    logs.truncated = Boolean(result.truncated);
+    logs.contentSize = Number(result.sizeBytes || 0);
+    logs.contentState = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || logsContentController !== activeController) return;
+    logs.contentState = "error";
+    logs.contentMessage = error.message || "Unable to load log file.";
+  } finally {
+    if (logsContentController === activeController) {
+      logsContentController = undefined;
+      paintLogs();
+    }
+  }
+}
+
 const operators = { code: "", zoneCode: "", items: [], state: "idle", message: "", mutation: "" };
 let operatorsController;
 
@@ -483,6 +664,8 @@ function page(current) {
   if (current === "dragonfly") return cacheViewerPage();
   if (current === "cassandra") return routeMetadataPage();
   if (current === "operators") return operatorsPage();
+  if (current === "memory") return memoryPage();
+  if (current === "logs") return logsPage();
   if (current === "reports") return `<section class="panel"><div class="p-head"><h2>Reports</h2><a href="${ADMIN_ENDPOINTS.reports}">Open Reports</a></div><div class="na-box"><div>Detailed Queue Metrics reporting and filtering remain available in the existing reports area.</div></div></section>`;
   return dashboard();
 }
@@ -492,14 +675,18 @@ function bind() {
   TRIP_FIELDS.forEach(([id, key]) => document.getElementById(id)?.addEventListener("input", (event) => { trip[key] = event.target.value; }));
   document.getElementById("bell")?.addEventListener("click", () => { location.href = href("failures"); });
   document.getElementById("burger")?.addEventListener("click", () => document.querySelector(".side")?.scrollIntoView({ behavior: "smooth" }));
+  bindUserMenu();
   if (route() === "dragonfly") bindCacheViewer();
   if (route() === "cassandra") bindRouteMetadata();
   if (route() === "operators") bindOperators();
+  if (route() === "memory") bindMemory();
+  if (route() === "logs") bindLogs();
 }
 
 async function load() {
   controller?.abort();
   controller = new AbortController();
+  stopMemoryAutoRefresh();
   const current = route();
   mount.innerHTML = shell(current, `<section class="kpis">${Array.from({ length: 8 }, () => '<div class="skeleton"></div>').join("")}</section>`);
   try {
@@ -508,6 +695,8 @@ async function load() {
     bind();
     if (current === "dragonfly") loadCacheViewer(true);
     if (current === "operators") loadOperators();
+    if (current === "memory") loadMemory();
+    if (current === "logs") loadLogs(true);
   } catch (error) {
     if (error.name === "AbortError") return;
     mount.innerHTML = shell(current, '<div class="err">Unable to load the protected admin snapshot. Check the session and refresh to retry.</div>');
@@ -516,6 +705,22 @@ async function load() {
 }
 
 load();
+
+async function logout() {
+  try {
+    await fetch("/orbitplus/logout", { method: "POST", credentials: "same-origin" });
+  } catch (error) {
+    // Ignore network errors; the session cookie clearing is best-effort and we
+    // always send the operator back to the login page below.
+  }
+  location.href = "/orbitplus/login";
+}
+
+function bindUserMenu() {
+  // The dropdown opens on hover/focus via CSS (.user-menu:hover .user-dropdown).
+  // Here we only wire the logout action.
+  document.getElementById("logout-item")?.addEventListener("click", () => logout());
+}
 
 function spanOf(seconds) {
   if (seconds === null || seconds === undefined) return "—";

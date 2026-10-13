@@ -111,7 +111,7 @@ func (service *QueueJobsService) Summary(ctx context.Context) (QueueJobsSummary,
 	summary := QueueJobsSummary{
 		LoadedRecords: len(jobs), Actions: make([]QueueJobsActionSummary, 0), ActivityCompletion: make([]QueueJobsActivityCompletionSummary, 0),
 		HourlyVolumes: queueJobsHourlyVolumes(now, jobs), HourlyActionVolumes: queueJobsHourlyActionVolumes(now, jobs), Operators: make([]QueueJobsOperatorSummary, 0), FailureReasons: make([]QueueJobsFailureSummary, 0),
-		RecentFailures: make([]domain.QueueMetrix, 0, 5), RecentJobs: make([]domain.QueueMetrix, 0, 5),
+		RecentFailures: make([]domain.QueueMetrix, 0, 5), RecentJobs: make([]domain.QueueMetrix, 0, len(jobs)),
 	}
 	actions := make(map[string]int)
 	activityCompletion := make(map[string]queueJobsActivityCompletionAccumulator)

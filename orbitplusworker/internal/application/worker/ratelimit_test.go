@@ -10,7 +10,7 @@ import (
 // first N hits are allowed, the next is blocked, and the window resets after the
 // configured duration.
 func TestInMemoryLimiterHitsPerWindow(t *testing.T) {
-	zone := "http://app.ezeebits.com"
+	zone := "http://zone-a.example.test"
 	limiter := NewInMemoryZoneRateLimiter(RateLimitPolicy{Default: RateLimit{Hits: 2, Window: time.Minute}})
 
 	current := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
@@ -51,7 +51,7 @@ func TestInMemoryLimiterZonesAreIndependent(t *testing.T) {
 	current := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	limiter.now = func() time.Time { return current }
 
-	zoneA, zoneB := "http://app.ezeebits.com", "http://app.r2.ezeebits.com"
+	zoneA, zoneB := "http://zone-a.example.test", "http://zone-b.example.test"
 
 	if allowed, _, _ := limiter.Acquire(context.Background(), zoneA); !allowed {
 		t.Fatal("zoneA first hit should be allowed")

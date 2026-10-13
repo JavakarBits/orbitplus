@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	"orbitplusmaster/internal/domain"
 )
@@ -19,10 +20,18 @@ type RouteLookup struct {
 	FromCode     string
 	ToCode       string
 	TripDate     string
+	// Username and APIToken are the BITS credentials from the read request path.
+	// They are optional for a plain cached read and are only used to refresh a
+	// Cold entry from BITS. They are never logged or stored.
+	Username string
+	APIToken string
 }
 
 type TripDetailsContentReader interface {
 	GetJSON(context.Context, string) ([]byte, bool, error)
+	// GetJSONRefresh reads and extends the key's TTL on a hit, keeping
+	// actively-read Hot content resident.
+	GetJSONRefresh(context.Context, string, time.Duration) ([]byte, bool, error)
 }
 
 type TripDetailsStageReader interface {
@@ -30,14 +39,67 @@ type TripDetailsStageReader interface {
 	FindStagesBySchedule(context.Context, string, string, string) ([]domain.TripDetailsStageMetadata, error)
 }
 
+// ColdRefresher refreshes a stale cached entry from BITS. It is optional: when
+// nil, a Cold entry is served from cache unchanged (freshness becomes a no-op).
+type ColdRefresher interface {
+	RefreshCold(ctx context.Context, action string, lookup RouteLookup, credential RefreshCredential) bool
+}
+
 type TripDetailsReadService struct {
 	content  TripDetailsContentReader
 	metadata TripDetailsStageReader
 	logger   *log.Logger
+	// refresher triggers a BITS refresh when candidates classify as Cold. nil
+	// disables age-based refresh, keeping the plain cached behavior.
+	refresher ColdRefresher
+	now       func() time.Time
 }
 
 func NewTripDetailsReadService(content TripDetailsContentReader, metadata TripDetailsStageReader, logger *log.Logger) *TripDetailsReadService {
-	return &TripDetailsReadService{content: content, metadata: metadata, logger: logger}
+	return &TripDetailsReadService{content: content, metadata: metadata, logger: logger, now: time.Now}
+}
+
+// WithColdRefresher attaches the cold-cache refresher so reads that find stale
+// (Cold) metadata fetch fresh data from BITS before serving. Returns the service
+// for chaining at construction.
+func (service *TripDetailsReadService) WithColdRefresher(refresher ColdRefresher) *TripDetailsReadService {
+	service.refresher = refresher
+	return service
+}
+
+// newestUpdatedAt returns the most recent UpdatedAt across candidates, used to
+// classify the route's freshness tier.
+func newestUpdatedAt(candidates []domain.TripDetailsStageMetadata) time.Time {
+	var newest time.Time
+	for _, candidate := range candidates {
+		if candidate.UpdatedAt.After(newest) {
+			newest = candidate.UpdatedAt
+		}
+	}
+	return newest
+}
+
+// refreshIfCold classifies the candidates by age and, when Cold, asks the
+// refresher to fetch fresh data from BITS and repair the cache. It returns true
+// when the cache was refreshed, so the caller re-reads the now-fresh metadata.
+// Hot and Warm return false (serve cache as-is). A nil refresher is a no-op.
+func (service *TripDetailsReadService) refreshIfCold(ctx context.Context, action string, lookup RouteLookup, candidates []domain.TripDetailsStageMetadata) bool {
+	if service.refresher == nil {
+		return false
+	}
+	now := time.Now
+	if service.now != nil {
+		now = service.now
+	}
+	tier := classifyFreshness(newestUpdatedAt(candidates), now().UTC())
+	if service.logger != nil {
+		service.logger.Printf("TripDetails %s freshness tier=%s operator=%q from=%q to=%q date=%q",
+			strings.ToLower(action), tier, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
+	}
+	if tier != TierCold {
+		return false
+	}
+	return service.refresher.RefreshCold(ctx, action, lookup, RefreshCredential{Username: lookup.Username, APIToken: lookup.APIToken})
 }
 
 func ValidLiveSearchLookup(lookup RouteLookup, username, apiToken string) bool {
@@ -88,6 +150,15 @@ func (service *TripDetailsReadService) Search(ctx context.Context, lookup RouteL
 		service.logNotFound("search", "metadata_empty")
 		return nil, ErrTripDetailsNotFound
 	}
+	// Age-based freshness: a Cold route (older than warmMaxAge) is refreshed from
+	// BITS before serving. On a successful refresh, re-read the now-fresh
+	// metadata so content resolution uses the repaired rows.
+	if service.refreshIfCold(ctx, BitsActionSearch, lookup, candidates) {
+		refreshed, err := service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
+		if err == nil && len(refreshed) > 0 {
+			candidates = refreshed
+		}
+	}
 	resolved, err := service.resolveStages(ctx, lookup, candidates)
 	if err != nil {
 		service.logFailure("search stage resolution")
@@ -107,7 +178,7 @@ func (service *TripDetailsReadService) Search(ctx context.Context, lookup RouteL
 			service.logFailure("search trip key")
 			return nil, err
 		}
-		trip, found, err := service.content.GetJSON(ctx, tripKey)
+		trip, found, err := service.content.GetJSONRefresh(ctx, tripKey, hotCacheTTL)
 		if err != nil {
 			service.logFailure("search trip content")
 			return nil, err
@@ -153,6 +224,17 @@ func (service *TripDetailsReadService) BusMap(ctx context.Context, lookup RouteL
 	if len(candidates) == 0 {
 		service.logNotFound("busmap", "metadata_empty")
 		return nil, ErrTripDetailsNotFound
+	}
+	// Age-based freshness: a Cold trip (older than warmMaxAge) is refreshed from
+	// BITS before serving. On a successful refresh, re-read and re-filter the
+	// now-fresh metadata so busmap resolution uses the repaired rows.
+	if service.refreshIfCold(ctx, BitsActionBusMap, lookup, candidates) {
+		refreshed, err := service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
+		if err == nil {
+			if filtered := filterStagesByTripCode(refreshed, lookup.TripCode); len(filtered) > 0 {
+				candidates = filtered
+			}
+		}
 	}
 	resolved, err := service.resolveStages(ctx, lookup, candidates)
 	if err != nil {
@@ -269,7 +351,7 @@ func (service *TripDetailsReadService) resolveStages(ctx context.Context, lookup
 			service.logFailure("stage resolver key")
 			return nil, err
 		}
-		stage, found, err := service.content.GetJSON(ctx, stageKey)
+		stage, found, err := service.content.GetJSONRefresh(ctx, stageKey, hotCacheTTL)
 		if err != nil {
 			service.logCandidate("stage resolver content_error", candidate)
 			return nil, err

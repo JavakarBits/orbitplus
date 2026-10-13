@@ -1,6 +1,9 @@
 package master
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 var zoneURLByCode = map[string]string{
 	"bits":         "http://app.ezeebits.com",
@@ -9,6 +12,7 @@ var zoneURLByCode = map[string]string{
 	"ybmbits":      "http://app.ybmtravels.in",
 	"sbltbits":     "http://app.sbltbus.com",
 	"svrtbits":     "http://app.srivenkataramanatravels.co.in",
+	"parveenbits":  "http://app.parveentravels.in",
 	"rmtbits":      "http://app.rathimeenatravels.in",
 	"gotourbits":   "http://app.gotourtravels.com",
 	"vinayagabits": "http://app.vinayagaselvamtravels.in",
@@ -27,6 +31,16 @@ func zoneURLFor(zoneCode string) (string, bool) {
 	zoneCode, exists := NormalizeZoneCode(zoneCode)
 	if !exists {
 		return "", false
+	}
+	// Per-zone override takes precedence, e.g. BITS_ZONE_BITS_URL=https://dev-stage.ezeebits.in
+	if override := strings.TrimSpace(os.Getenv("BITS_ZONE_" + strings.ToUpper(zoneCode) + "_URL")); override != "" {
+		return strings.TrimRight(override, "/"), true
+	}
+	// Global override points every zone at one BITS environment (e.g. dev-stage),
+	// so worker refresh jobs, live reads, and the Java block/confirm path all hit
+	// the same host and operate on the same trip data.
+	if override := strings.TrimSpace(os.Getenv("BITS_ZONE_DEFAULT_URL")); override != "" {
+		return strings.TrimRight(override, "/"), true
 	}
 	return zoneURLByCode[zoneCode], true
 }

@@ -171,6 +171,10 @@ type RuntimeConfig struct {
 	HealthAPI             HealthAPIConfig `json:"healthApi"`
 	HTTPTimeout           time.Duration   `json:"httpTimeout"`
 	OrbitPlusResponseSize int64           `json:"orbitPlusResponseSize"`
+	// LogDir is the directory where the Worker writes its application log file
+	// in addition to stderr. Defaults to "logs". The Master's admin Logs page
+	// reads this directory to display Worker logs alongside its own.
+	LogDir string `json:"logDir"`
 	// RateLimit is the per-zone BITS cooldown policy. When it resolves to no
 	// positive interval, rate limiting is disabled.
 	RateLimit RateLimitPolicy `json:"-"`
@@ -190,6 +194,7 @@ func DefaultRuntimeConfig() RuntimeConfig {
 		},
 		HealthAPI:   HealthAPIConfig{Host: "0.0.0.0", Port: 8080},
 		HTTPTimeout: 15 * time.Second, OrbitPlusResponseSize: 64 << 10,
+		LogDir:      "logs",
 	}
 }
 
@@ -227,7 +232,11 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 			*target = value
 		}
 	}
-	setString("RABBITMQ_URL", &config.RabbitMQ.URL)
+	builtRabbitMQURL, err := buildRabbitMQURL(lookup)
+	if err != nil {
+		return err
+	}
+	config.RabbitMQ.URL = builtRabbitMQURL
 	setString("RABBITMQ_QUEUE", &config.RabbitMQ.Queue)
 	setString("RABBITMQ_EXCHANGE", &config.RabbitMQ.Exchange)
 	setString("RABBITMQ_ROUTING_KEY", &config.RabbitMQ.RoutingKey)
@@ -235,12 +244,20 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 	setString("ORBIT_URL", &config.Orbit.Endpoint)
 	setString("ORBIT_NAMESPACE_CODE", &config.Orbit.NamespaceCode)
 	setString("ORBITPLUS_URL", &config.OrbitPlus.Endpoint)
+	setString("LOG_DIR", &config.LogDir)
 	setString("HEALTH_API_HOST", &config.HealthAPI.Host)
 	if err := setTCPPort(lookup, "HEALTH_API_PORT", &config.HealthAPI.Port); err != nil {
 		return err
 	}
 	if err := loadSecret(lookup, "RABBITMQ_USERNAME", "RABBITMQ_USERNAME_FILE", &config.RabbitMQ.Username); err != nil {
 		return err
+	}
+	// RABBITMQ_USER is the split-key alias shared with the Master. Preserve the
+	// existing RABBITMQ_USERNAME and secret-file contract for compatibility.
+	if config.RabbitMQ.Username == "" {
+		if err := loadSecret(lookup, "RABBITMQ_USER", "RABBITMQ_USER_FILE", &config.RabbitMQ.Username); err != nil {
+			return err
+		}
 	}
 	if err := loadSecret(lookup, "RABBITMQ_PASSWORD", "RABBITMQ_PASSWORD_FILE", &config.RabbitMQ.Password); err != nil {
 		return err
@@ -273,6 +290,46 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 		return err
 	}
 	return nil
+}
+
+// buildRabbitMQURL assembles the internal AMQP endpoint from split environment
+// variables. Credentials remain separate and are supplied through the AMQP
+// client's authentication config.
+func buildRabbitMQURL(lookup func(string) (string, bool)) (string, error) {
+	host, ok := lookup("RABBITMQ_HOST")
+	host = strings.TrimSpace(host)
+	if !ok || host == "" {
+		return "", fmt.Errorf("RABBITMQ_HOST must be set")
+	}
+
+	useTLS := false
+	if value, ok := lookup("RABBITMQ_TLS"); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return "", fmt.Errorf("RABBITMQ_TLS must be true or false")
+		}
+		useTLS = parsed
+	}
+	port := 5672
+	scheme := "amqp"
+	if useTLS {
+		port = 5671
+		scheme = "amqps"
+	}
+	if value, ok := lookup("RABBITMQ_PORT"); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 1 || parsed > 65535 {
+			return "", fmt.Errorf("RABBITMQ_PORT must be an integer between 1 and 65535")
+		}
+		port = parsed
+	}
+
+	vhost := "/"
+	if value, ok := lookup("RABBITMQ_VHOST"); ok && strings.TrimSpace(value) != "" {
+		vhost = "/" + strings.TrimPrefix(strings.TrimSpace(value), "/")
+	}
+	endpoint := url.URL{Scheme: scheme, Host: net.JoinHostPort(host, strconv.Itoa(port)), Path: vhost}
+	return endpoint.String(), nil
 }
 
 // applyRateLimit reads the per-zone BITS cooldown policy. The default interval
@@ -308,8 +365,8 @@ func parseRateLimit(value string) (RateLimit, error) {
 		return RateLimit{}, fmt.Errorf("must have a positive hit count, e.g. 10/1m")
 	}
 	window, err := time.ParseDuration(strings.TrimSpace(windowText))
-	if err != nil || window <= 0 {
-		return RateLimit{}, fmt.Errorf("must have a positive window duration, e.g. 10/1m")
+	if err != nil || window < time.Millisecond {
+		return RateLimit{}, fmt.Errorf("must have a window duration of at least 1ms, e.g. 10/1m")
 	}
 	return RateLimit{Hits: hits, Window: window}, nil
 }
@@ -451,7 +508,7 @@ func (config RuntimeConfig) Validate() error {
 	if err := config.HealthAPI.Validate(); err != nil {
 		return err
 	}
-	if err := ValidateRabbitMQURL(config.RabbitMQ.URL, config.AppEnvironment); err != nil {
+	if err := ValidateRabbitMQEndpoint(config.RabbitMQ.URL, config.AppEnvironment); err != nil {
 		return err
 	}
 	if config.RabbitMQ.Queue == "" || config.RabbitMQ.Exchange == "" || config.RabbitMQ.RoutingKey == "" || config.RabbitMQ.Prefetch <= 0 {
@@ -477,9 +534,9 @@ func (config RuntimeConfig) Validate() error {
 
 func (config RuntimeConfig) WorkerConfigValid() error { return config.Worker.Validate() }
 
-// ValidateRabbitMQURL permits amqps in every environment and amqp only in development.
-func ValidateRabbitMQURL(raw string, environment AppEnvironment) error {
-	return validateEndpointURL(raw, environment, "RabbitMQ URL", "amqps", "amqp", false, false)
+// ValidateRabbitMQEndpoint validates the internally assembled RabbitMQ endpoint.
+func ValidateRabbitMQEndpoint(raw string, environment AppEnvironment) error {
+	return validateEndpointURL(raw, environment, "RabbitMQ endpoint", "amqps", "amqp", false, false)
 }
 
 // ValidateBitsURL permits https in every environment and http only in development.

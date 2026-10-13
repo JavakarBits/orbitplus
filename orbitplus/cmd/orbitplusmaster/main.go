@@ -3,8 +3,12 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"orbitplusmaster/internal/application/master"
@@ -32,6 +36,7 @@ type masterServices struct {
 	// difference writer and the report reader. Nil when Cassandra could not be
 	// reached for it, which disables recording and the report but not reads.
 	differences *cassandra.CacheFreshnessDifferenceRepository
+	rateLimiter master.ZoneRateLimiter
 	close       func()
 }
 
@@ -43,6 +48,14 @@ func main() {
 		log.Fatalf("invalid orbitplusmaster configuration: %v", err)
 	}
 	log.Printf("orbitplusmaster configuration loaded: APP_ENV=%s MASTER_API_PORT=%d", config.AppEnvironment, config.APIPort)
+
+	closeLogFile, err := setupFileLogging(config.LogDir)
+	if err != nil {
+		log.Printf("file logging disabled: %v", err)
+	} else {
+		defer closeLogFile()
+		log.Printf("file logging enabled: writing to %s", config.LogDir)
+	}
 
 	services, err := newMasterServices(config)
 	if err != nil {
@@ -113,12 +126,42 @@ func main() {
 		busmapAnalyticsReader = services.differences
 	}
 	busmapAnalyticsService := master.NewBusmapAnalyticsService(busmapAnalyticsReader)
+	logsService := master.NewLogsReadService(
+		master.LogSource{Label: "master", Dir: config.LogDir},
+		master.LogSource{Label: "worker", Dir: config.WorkerLogDir},
+	)
 
-	freshnessVerifier := newCacheFreshnessVerifier(config, services.read, services.persistence, differenceWriter)
+	freshnessVerifier := newCacheFreshnessVerifier(config, services.read, services.persistence, differenceWriter, services.rateLimiter)
+
+	// Age-based cache freshness: a cacheFlag=1 read that finds Cold data (older
+	// than CACHE_WARM_MAX_AGE) refreshes it from BITS. It needs the live verifier
+	// (to fetch + repair) and the operator registry (to resolve operator -> zone
+	// -> BITS URL). When either is unavailable, the refresher is not attached and
+	// reads keep serving whatever cache exists.
+	if services.read != nil && freshnessVerifier != nil && operatorRegistry != nil {
+		coldRefresher := master.NewColdCacheRefresher(freshnessVerifier, operatorRegistry, log.Default())
+		services.read.WithColdRefresher(coldRefresher)
+		log.Print("cold cache refresh enabled: Cold reads refresh from BITS via operator zone")
+	} else {
+		log.Print("cold cache refresh disabled: live verification and operator registry are required")
+	}
+
+	// Dedicated log files for Search and BusMap calls so each call type can be
+	// inspected on its own.
+	searchLogger, closeSearchLog := newNamedFileLogger(config.LogDir, "search")
+	defer closeSearchLog()
+	busmapLogger, closeBusmapLog := newNamedFileLogger(config.LogDir, "busmap")
+	defer closeBusmapLog()
+	// Dedicated log file for Orionmax inventory-change events pushed to the
+	// master, so inventory pushes can be inspected on their own.
+	inventoryLogger, closeInventoryLog := newNamedFileLogger(config.LogDir, "inventory")
+	defer closeInventoryLog()
+	orionmaxInventoryChangeService.WithLogger(inventoryLogger)
 
 	router := masterhttp.NewRouter(startedAt, services.tripDetails, orionmaxInventoryChangeService, services.read,
 		services.cache, rabbitMQManagementReader, queueJobsService, tripFreshnessService, tripHistoryService,
-		tablesService, operatorRegistry, busmapAnalyticsService, uiAccessAuth, freshnessVerifier)
+		tablesService, operatorRegistry, busmapAnalyticsService, logsService, uiAccessAuth, freshnessVerifier,
+		searchLogger, busmapLogger, inventoryLogger)
 	server := &http.Server{Addr: config.Address(), Handler: router}
 	log.Printf("orbitplusmaster listening on %s", config.Address())
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -126,10 +169,52 @@ func main() {
 	}
 }
 
+// setupFileLogging makes the standard logger write to a dated file inside
+// logDir in addition to stderr, so the admin Logs page has something to read.
+// It returns a close function for the file. A failure here is non-fatal: the
+// service keeps logging to stderr as before.
+func setupFileLogging(logDir string) (func(), error) {
+	if logDir == "" {
+		return nil, fmt.Errorf("log directory is empty")
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log directory %q: %w", logDir, err)
+	}
+	name := filepath.Join(logDir, "orbitplusmaster-"+time.Now().UTC().Format("2006-01-02")+".log")
+	file, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open log file %q: %w", name, err)
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, file))
+	return func() { _ = file.Close() }, nil
+}
+
+// newNamedFileLogger creates a dedicated dated log file inside logDir and
+// returns a *log.Logger that writes to both stderr and that file, so a specific
+// concern (e.g. search or busmap calls) has its own log file. A failure here is
+// non-fatal: it falls back to the process logger and logs to stderr only.
+func newNamedFileLogger(logDir, name string) (*log.Logger, func()) {
+	if logDir == "" {
+		return log.Default(), func() {}
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		log.Printf("%s file logging disabled: %v", name, err)
+		return log.Default(), func() {}
+	}
+	fileName := filepath.Join(logDir, "orbitplusmaster-"+name+"-"+time.Now().UTC().Format("2006-01-02")+".log")
+	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Printf("%s file logging disabled: %v", name, err)
+		return log.Default(), func() {}
+	}
+	logger := log.New(io.MultiWriter(os.Stderr, file), "", log.LstdFlags)
+	return logger, func() { _ = file.Close() }
+}
+
 // newCacheFreshnessVerifier builds the live Bits verification path when it is
 // configured. A misconfigured or absent group disables only this feature: the
 // service must keep serving cached reads, so nothing here is fatal.
-func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.TripDetailsReadService, repairer *master.TripDetailsStorage, differenceWriter master.CacheDifferenceWriter) *master.CacheFreshnessVerifier {
+func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.TripDetailsReadService, repairer *master.TripDetailsStorage, differenceWriter master.CacheDifferenceWriter, rateLimiter master.ZoneRateLimiter) *master.CacheFreshnessVerifier {
 	if config.VerificationError != nil {
 		log.Printf("live verification disabled: %v", config.VerificationError)
 		return nil
@@ -148,13 +233,14 @@ func newCacheFreshnessVerifier(config master.RuntimeConfig, readService *master.
 	}
 
 	verifier, err := master.NewCacheFreshnessVerifier(bitsClient, readService, differenceWriter,
-		repairer, config.Verification.MaxConcurrent, log.Default())
+		repairer, rateLimiter, config.Verification.MaxConcurrent, log.Default())
 	if err != nil {
 		log.Printf("live verification disabled: %v", err)
 		return nil
 	}
-	log.Printf("live verification enabled: max_concurrent=%d http_timeout=%s recording=%t repair=%t credentials=request",
+	log.Printf("live verification enabled: max_concurrent=%d http_timeout=%s rate_limit=%d/%s recording=%t repair=%t credentials=request",
 		config.Verification.MaxConcurrent, config.Verification.HTTPTimeout,
+		config.Verification.RateLimit.Default.Hits, config.Verification.RateLimit.Default.Window,
 		differenceWriter != nil, repairer != nil)
 	return verifier
 }
@@ -172,6 +258,15 @@ func newMasterServices(config master.RuntimeConfig) (masterServices, error) {
 	})
 	if err != nil {
 		return masterServices{}, err
+	}
+	var rateLimiter master.ZoneRateLimiter
+	if config.Verification != nil && config.Verification.RateLimit.Enabled() {
+		limiter, limiterErr := dragonfly.NewZoneRateLimiter(cache, config.Verification.RateLimit)
+		if limiterErr != nil {
+			_ = cache.Close()
+			return masterServices{}, limiterErr
+		}
+		rateLimiter = limiter
 	}
 	cassandraConfig := cassandra.Config{
 		Hosts: config.Storage.Cassandra.Hosts, Port: config.Storage.Cassandra.Port,
@@ -208,6 +303,7 @@ func newMasterServices(config master.RuntimeConfig) (masterServices, error) {
 		metadata:    metadata,
 		metrix:      metrix,
 		differences: differences,
+		rateLimiter: rateLimiter,
 		close: func() {
 			if differences != nil {
 				differences.Close()

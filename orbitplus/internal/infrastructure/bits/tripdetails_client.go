@@ -79,6 +79,8 @@ func (client *BitsTripDetailsClient) FetchTripDetails(ctx context.Context, looku
 	}
 	httpRequest.Header.Set("Accept", "application/json")
 
+	client.logger.Printf("Bits live fetch started: action=%s operator=%q host=%q",
+		lookup.Action, lookup.OperatorCode, lookupHost(lookup))
 	response, err := client.client.Do(httpRequest)
 	if err != nil {
 		// The error from Do embeds the request URL, which carries credentials,
@@ -134,7 +136,12 @@ func (client *BitsTripDetailsClient) FetchTripDetails(ctx context.Context, looku
 			lookup.Action, lookup.OperatorCode, lookupHost(lookup), describeEnvelope(envelope))
 		return master.BitsResult{}, client.fail(lookup, master.BitsFailureNoDataMember, "no data member")
 	}
-	return client.dataResult(lookup, raw)
+	result, resultErr := client.dataResult(lookup, raw)
+	if resultErr == nil {
+		client.logger.Printf("Bits live fetch completed: action=%s operator=%q host=%q responseBytes=%d empty=%t",
+			lookup.Action, lookup.OperatorCode, lookupHost(lookup), len(body), result.Empty)
+	}
+	return result, resultErr
 }
 
 // maxDescribedMemberBytes bounds how much of a reported member is logged, so a

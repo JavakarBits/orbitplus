@@ -26,6 +26,43 @@ var actionTypeByActivityType = map[string]string{
 	"push_trip_info": "searchbusmap",
 }
 
+// defaultInventoryPriority is used for any activity type not listed in
+// priorityByActivityType. Higher numbers are delivered first by RabbitMQ (the
+// queue must be declared with x-max-priority >= the highest value here).
+const defaultInventoryPriority uint8 = 5
+
+// priorityByActivityType maps each Orionmax activity type to its AMQP message
+// priority. Time-sensitive seat/block changes rank highest so they jump ahead
+// of bulk refreshes.
+var priorityByActivityType = map[string]uint8{
+	"block-release":                 10,
+	"seat-block-release":            10,
+	"ticket-tentative-block-cancel": 10,
+	"ticket-cancel":                 9,
+	"phone-ticket-cancel":           9,
+	"no_show":                       9,
+	"not-travel":                    9,
+	"quick-fare-change":             8,
+	"dp-fare-change":                8,
+	"fare-change":                   8,
+	"service_inactive":              7,
+	"vsd_toggle":                    7,
+	"shift":                         7,
+	"notify-schedule":               6,
+	"push_trip_info":                6,
+	"manual-refresh":                6,
+	"daily-job":                     10,
+}
+
+// priorityForActivityType returns the AMQP priority for an activity type,
+// falling back to defaultInventoryPriority when the type is unknown.
+func priorityForActivityType(activityType string) uint8 {
+	if priority, ok := priorityByActivityType[activityType]; ok {
+		return priority
+	}
+	return defaultInventoryPriority
+}
+
 // InventoryScheduleReader resolves Bits trip codes from stored schedule metadata.
 type InventoryScheduleReader interface {
 	FindStagesBySchedule(ctx context.Context, operatorCode, scheduleCode, tripDate string) ([]domain.TripDetailsStageMetadata, error)

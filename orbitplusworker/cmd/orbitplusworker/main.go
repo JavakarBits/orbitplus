@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +24,30 @@ import (
 	"orbitplusworker/internal/infrastructure/orbitplus"
 	"orbitplusworker/internal/infrastructure/rabbitmq"
 )
+
+// setupFileLogging makes both the standard logger and the slog default logger
+// write to a dated file inside logDir in addition to stderr, so the admin Logs
+// page (served by the Master) can display the Worker's logs. The Worker uses
+// log for startup/shutdown and log/slog for per-message processing, so both
+// must be redirected. A failure here is non-fatal: logging keeps going to
+// stderr as before.
+func setupFileLogging(logDir string) (func(), error) {
+	if logDir == "" {
+		return nil, fmt.Errorf("log directory is empty")
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log directory %q: %w", logDir, err)
+	}
+	name := filepath.Join(logDir, "orbitplusworker-"+time.Now().UTC().Format("2006-01-02")+".log")
+	file, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open log file %q: %w", name, err)
+	}
+	writer := io.MultiWriter(os.Stderr, file)
+	log.SetOutput(writer)
+	slog.SetDefault(slog.New(slog.NewTextHandler(writer, nil)))
+	return func() { _ = file.Close() }, nil
+}
 
 type authenticatedTransport struct {
 	base        http.RoundTripper
@@ -114,6 +141,14 @@ func main() {
 		log.Fatalf("invalid tripdetails refresh worker configuration: %v", err)
 	}
 	log.Printf("tripdetails refresh worker configuration loaded: APP_ENV=%s", config.AppEnvironment)
+
+	closeLogFile, err := setupFileLogging(config.LogDir)
+	if err != nil {
+		log.Printf("file logging disabled: %v", err)
+	} else {
+		defer closeLogFile()
+		log.Printf("file logging enabled: writing to %s", config.LogDir)
+	}
 
 	rateLimiter, closeRateLimiter, err := newZoneRateLimiter(config)
 	if err != nil {

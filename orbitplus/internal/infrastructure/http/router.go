@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -12,8 +13,8 @@ import (
 // freshnessVerifier may be nil, which leaves the cached read path untouched and
 // makes a Cache_Flag value of 0 report the live feature as unconfigured rather
 // than silently serving the cached copy as though it were live.
-func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, busmapAnalyticsService *master.BusmapAnalyticsService, uiAccessAuth *UIAccessAuth, freshnessVerifier *master.CacheFreshnessVerifier) http.Handler {
-	readHandler := NewTripDetailsReadHandler(readService, freshnessVerifier)
+func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, busmapAnalyticsService *master.BusmapAnalyticsService, logsService *master.LogsReadService, uiAccessAuth *UIAccessAuth, freshnessVerifier *master.CacheFreshnessVerifier, searchLogger *log.Logger, busmapLogger *log.Logger, inventoryLogger *log.Logger) http.Handler {
+	readHandler := NewTripDetailsReadHandler(readService, freshnessVerifier, searchLogger, busmapLogger)
 	queueJobsHandler := NewQueueJobsReportHandler(queueJobsService)
 	queueDashboardHandler := NewQueueDashboardHandler(queueJobsService)
 	systemHealthHandler := NewSystemHealthHandler(startedAt)
@@ -24,12 +25,14 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	tripHistoryHandler := NewTripHistoryHandler(tripHistoryService)
 	operatorsHandler := NewOperatorsHandler(operatorRegistry)
 	busmapAnalyticsHandler := NewBusmapAnalyticsHandler(busmapAnalyticsService)
+	logsHandler := NewLogsHandler(logsService)
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /{$}", redirectTo("/orbitplus/login"))
 	mux.Handle("GET /orbitplus", redirectTo("/orbitplus/login"))
 	mux.Handle("/orbitplus/login", http.HandlerFunc(uiAccessAuth.Login))
 	mux.Handle("POST /orbitplus/logout", http.HandlerFunc(uiAccessAuth.Logout))
+	mux.Handle("GET /orbitplus/logout", http.HandlerFunc(uiAccessAuth.Logout))
 	mux.Handle("GET /orbitplus/{$}", redirectTo("/orbitplus/admin"))
 	mux.Handle("GET /orbitplus/admin", uiAccessAuth.RequirePage(serveUIFile("ui/admin/index.html")))
 	mux.Handle("GET /orbitplus/admin/", redirectTo("/orbitplus/admin"))
@@ -59,6 +62,8 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	mux.Handle("GET /orbitplus/api/dashboard/system-health", uiAccessAuth.RequireAPI(systemHealthHandler))
 	mux.Handle("GET /orbitplus/api/admin/dashboard", uiAccessAuth.RequireAPI(adminDashboardHandler))
 	mux.Handle("GET /orbitplus/api/admin/trip-history", uiAccessAuth.RequireAPI(tripHistoryHandler))
+	mux.Handle("GET /orbitplus/api/admin/logs", uiAccessAuth.RequireAPI(logsHandler))
+	mux.Handle("GET /orbitplus/api/admin/logs/content", uiAccessAuth.RequireAPI(http.HandlerFunc(logsHandler.ServeContent)))
 	mux.Handle("GET /orbitplus/api/admin/operators", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeList)))
 	mux.Handle("POST /orbitplus/api/admin/operators", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeCreate)))
 	mux.Handle("PATCH /orbitplus/api/admin/operators/{operatorCode}", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeStatus)))
@@ -70,7 +75,7 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 
 	mux.Handle("POST /api/tripdetails", NewTripDetailsHandler(tripDetailsService))
 	mux.Handle("POST /orbitplus/api/tripdetails/dlq", NewTripDetailsDLQHandler(tripDetailsService))
-	mux.Handle("POST /api/orionmax/inventory/events", NewOrionmaxInventoryChangeHandler(orionmaxInventoryChangeService))
+	mux.Handle("POST /api/orionmax/inventory/events", NewOrionmaxInventoryChangeHandler(orionmaxInventoryChangeService, inventoryLogger))
 	mux.Handle("GET /health", NewHealthHandler(master.Version))
 	mux.Handle("GET /orbitplus/api/3.0/json/{operatorCode}/{username}/{apiToken}/search/{fromCode}/{toCode}/{tripDate}", http.HandlerFunc(readHandler.ServeSearch))
 	mux.Handle("GET /orbitplus/api/3.0/json/{operatorCode}/{username}/{apiToken}/busmap/{tripCode}/{fromStationCode}/{toStationCode}/{travelDate}", http.HandlerFunc(readHandler.ServeBusMap))
