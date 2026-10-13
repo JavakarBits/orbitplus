@@ -42,12 +42,13 @@ type VerifyResult struct {
 // load onto Bits.
 type CacheFreshnessVerifier struct {
 	fetcher BitsTripDetailsFetcher
-	reader   *TripDetailsReadService
-	writer   CacheDifferenceWriter
+	reader  *TripDetailsReadService
+	writer  CacheDifferenceWriter
 	// repairer overwrites the cached copy with the live copy after a difference.
 	// It is the same storage path the Worker callback uses, so the repaired
 	// documents are split and indexed identically.
-	repairer *TripDetailsStorage
+	repairer    *TripDetailsStorage
+	rateLimiter ZoneRateLimiter
 	// slots is a counting semaphore. A send acquires, a receive releases.
 	slots  chan struct{}
 	now    func() time.Time
@@ -62,6 +63,7 @@ func NewCacheFreshnessVerifier(
 	reader *TripDetailsReadService,
 	writer CacheDifferenceWriter,
 	repairer *TripDetailsStorage,
+	rateLimiter ZoneRateLimiter,
 	maxConcurrent int,
 	logger *log.Logger,
 ) (*CacheFreshnessVerifier, error) {
@@ -75,13 +77,14 @@ func NewCacheFreshnessVerifier(
 		logger = log.Default()
 	}
 	return &CacheFreshnessVerifier{
-		fetcher:  fetcher,
-		reader:   reader,
-		writer:   writer,
-		repairer: repairer,
-		slots:    make(chan struct{}, maxConcurrent),
-		now:      time.Now,
-		logger:   logger,
+		fetcher:     fetcher,
+		reader:      reader,
+		writer:      writer,
+		repairer:    repairer,
+		rateLimiter: rateLimiter,
+		slots:       make(chan struct{}, maxConcurrent),
+		now:         time.Now,
+		logger:      logger,
 	}, nil
 }
 
@@ -109,6 +112,21 @@ func (verifier *CacheFreshnessVerifier) Verify(ctx context.Context, lookup BitsL
 		return VerifyResult{Outcome: domain.OutcomeCredentialUnavailable}, ErrOperatorCredentialUnavailable
 	}
 
+	if verifier.rateLimiter != nil {
+		allowed, retryAfter, err := verifier.rateLimiter.Acquire(ctx, lookup.BaseURL)
+		if err != nil {
+			// Match Worker behavior: a Dragonfly runtime problem must not make all
+			// live reads unavailable. Concurrency limiting still remains active.
+			verifier.logger.Printf("live verification rate-limit check failed; allowing request: action=%s operator=%q zone=%q",
+				lookup.Action, lookup.OperatorCode, lookup.BaseURL)
+		} else if !allowed {
+			<-verifier.slots
+			verifier.logger.Printf("live verification rejected: remote_addr=%q action=%s operator=%q zone=%q outcome=RATE_LIMITED retry_after=%s",
+				remoteAddress, lookup.Action, lookup.OperatorCode, lookup.BaseURL, retryAfter)
+			return VerifyResult{}, &ZoneRateLimitError{RetryAfter: retryAfter}
+		}
+	}
+
 	result, fetchErr := verifier.fetcher.FetchTripDetails(ctx, lookup)
 	var outcome domain.VerificationOutcome
 	var differences []domain.DifferenceEntry
@@ -124,10 +142,20 @@ func (verifier *CacheFreshnessVerifier) Verify(ctx context.Context, lookup BitsL
 	}
 	<-verifier.slots
 
-	// Repair before recording, so the row states whether the cache was fixed.
+	// Always overwrite the cache from a usable live copy so every cacheFlag=0
+	// read leaves Dragonfly holding the freshest BITS data, including when the
+	// comparison reported MATCH. Only a rejected or unavailable source carries
+	// no trustworthy data to write.
 	repaired := false
-	if outcome == domain.OutcomeDifferent || outcome == domain.OutcomeCacheMissing {
+	if fetchErr == nil && outcome != domain.OutcomeSourceRejected && outcome != domain.OutcomeSourceUnavailable {
 		repaired = verifier.repairCache(ctx, lookup, result)
+		// A live BusMap only carries per-seat statuses, not the search-level
+		// availableSeatCount. Refresh the search cache from a companion live
+		// SEARCH fetch so a later cacheFlag=1 search reflects the new seat
+		// count too. Best-effort: a failure here never fails the busmap read.
+		if lookup.Action == BitsActionBusMap {
+			verifier.refreshSearchCacheForBusMap(ctx, lookup)
+		}
 	}
 	// A match learned that nothing is stale and a rejection learned nothing at
 	// all, so neither earns a row.
@@ -189,17 +217,32 @@ func (verifier *CacheFreshnessVerifier) repairCache(ctx context.Context, lookup 
 	if verifier.repairer == nil || result.Empty || len(result.Data) == 0 {
 		return false
 	}
-	envelope := map[string]any{
-		"actionType":   strings.ToLower(lookup.Action),
-		"operatorCode": lookup.OperatorCode,
-	}
-	var orbitResponse any
-	if err := json.Unmarshal([]byte(`{"data":`+string(result.Data)+`}`), &orbitResponse); err != nil {
+	var liveData any
+	if err := json.Unmarshal(result.Data, &liveData); err != nil {
 		verifier.logger.Printf("cache repair skipped: action=%s operator=%q reason=unreadable_live_copy",
 			lookup.Action, lookup.OperatorCode)
 		return false
 	}
-	envelope["orbitResponse"] = orbitResponse
+
+	actionType := strings.ToLower(lookup.Action)
+	if lookup.Action == BitsActionBusMap {
+		// A live BusMap is stored through the combined SEARCHBUSMAP path so the
+		// stage projection and route/schedule metadata the BusMap read requires
+		// are written too, not just the busmap document (which the read cannot
+		// reach without them, especially on a cold cache). The live BusMap
+		// object is enriched with the lookup's known route fields so the
+		// combined store has the key components it needs.
+		actionType = "searchbusmap"
+		if entry, ok := liveData.(map[string]any); ok {
+			enrichBusMapRepairEntry(entry, lookup)
+		}
+	}
+
+	envelope := map[string]any{
+		"actionType":    actionType,
+		"operatorCode":  lookup.OperatorCode,
+		"orbitResponse": map[string]any{"data": liveData},
+	}
 
 	// Store now reports which trip codes it touched alongside the error. The
 	// repair only needs to know whether the write landed, so the result is
@@ -212,6 +255,73 @@ func (verifier *CacheFreshnessVerifier) repairCache(ctx context.Context, lookup 
 	verifier.logger.Printf("cache repaired from live copy: action=%s operator=%q",
 		lookup.Action, lookup.OperatorCode)
 	return true
+}
+
+// refreshSearchCacheForBusMap fetches the same route live as a SEARCH and
+// repairs the search cache, so the search-level availableSeatCount tracks a
+// booking that just changed the seat map. It is best-effort: any failure is
+// logged and swallowed because the primary busmap read already succeeded.
+func (verifier *CacheFreshnessVerifier) refreshSearchCacheForBusMap(ctx context.Context, busMapLookup BitsLookup) {
+	if busMapLookup.FromCode == "" || busMapLookup.ToCode == "" || busMapLookup.TravelDate == "" {
+		return
+	}
+	searchLookup := BitsLookup{
+		Action:       BitsActionSearch,
+		OperatorCode: busMapLookup.OperatorCode,
+		BaseURL:      busMapLookup.BaseURL,
+		Username:     busMapLookup.Username,
+		APIToken:     busMapLookup.APIToken,
+		FromCode:     busMapLookup.FromCode,
+		ToCode:       busMapLookup.ToCode,
+		TravelDate:   busMapLookup.TravelDate,
+	}
+	result, err := verifier.fetcher.FetchTripDetails(ctx, searchLookup)
+	if err != nil {
+		verifier.logger.Printf("search cache refresh after busmap failed: operator=%q error=%v",
+			busMapLookup.OperatorCode, err)
+		return
+	}
+	if result.Empty || len(result.Data) == 0 {
+		return
+	}
+	if verifier.repairCache(ctx, searchLookup, result) {
+		verifier.logger.Printf("search cache refreshed after busmap: operator=%q", busMapLookup.OperatorCode)
+	}
+}
+
+// enrichBusMapRepairEntry fills the route key fields the combined SEARCHBUSMAP
+// store requires from the live-read lookup when the Bits BusMap object omits
+// them. It never overwrites a value the response already carries.
+func enrichBusMapRepairEntry(entry map[string]any, lookup BitsLookup) {
+	setIfBlank(entry, "tripCode", lookup.TripCode)
+	setIfBlank(entry, "travelDate", lookup.TravelDate)
+	setNestedCodeIfBlank(entry, "fromStation", lookup.FromCode)
+	setNestedCodeIfBlank(entry, "toStation", lookup.ToCode)
+}
+
+func setIfBlank(entry map[string]any, key, value string) {
+	if value == "" {
+		return
+	}
+	if existing, ok := entry[key].(string); ok && strings.TrimSpace(existing) != "" {
+		return
+	}
+	entry[key] = value
+}
+
+func setNestedCodeIfBlank(entry map[string]any, station, code string) {
+	if code == "" {
+		return
+	}
+	nested, ok := entry[station].(map[string]any)
+	if !ok || nested == nil {
+		nested = map[string]any{}
+		entry[station] = nested
+	}
+	if existing, ok := nested["code"].(string); ok && strings.TrimSpace(existing) != "" {
+		return
+	}
+	nested["code"] = code
 }
 
 // cachedEntries reads the cached copy through the same service that serves

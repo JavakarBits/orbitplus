@@ -171,6 +171,10 @@ type RuntimeConfig struct {
 	HealthAPI             HealthAPIConfig `json:"healthApi"`
 	HTTPTimeout           time.Duration   `json:"httpTimeout"`
 	OrbitPlusResponseSize int64           `json:"orbitPlusResponseSize"`
+	// LogDir is the directory where the Worker writes its application log file
+	// in addition to stderr. Defaults to "logs". The Master's admin Logs page
+	// reads this directory to display Worker logs alongside its own.
+	LogDir string `json:"logDir"`
 	// RateLimit is the per-zone BITS cooldown policy. When it resolves to no
 	// positive interval, rate limiting is disabled.
 	RateLimit RateLimitPolicy `json:"-"`
@@ -190,6 +194,7 @@ func DefaultRuntimeConfig() RuntimeConfig {
 		},
 		HealthAPI:   HealthAPIConfig{Host: "0.0.0.0", Port: 8080},
 		HTTPTimeout: 15 * time.Second, OrbitPlusResponseSize: 64 << 10,
+		LogDir:      "logs",
 	}
 }
 
@@ -239,6 +244,7 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 	setString("ORBIT_URL", &config.Orbit.Endpoint)
 	setString("ORBIT_NAMESPACE_CODE", &config.Orbit.NamespaceCode)
 	setString("ORBITPLUS_URL", &config.OrbitPlus.Endpoint)
+	setString("LOG_DIR", &config.LogDir)
 	setString("HEALTH_API_HOST", &config.HealthAPI.Host)
 	if err := setTCPPort(lookup, "HEALTH_API_PORT", &config.HealthAPI.Port); err != nil {
 		return err
@@ -359,8 +365,8 @@ func parseRateLimit(value string) (RateLimit, error) {
 		return RateLimit{}, fmt.Errorf("must have a positive hit count, e.g. 10/1m")
 	}
 	window, err := time.ParseDuration(strings.TrimSpace(windowText))
-	if err != nil || window <= 0 {
-		return RateLimit{}, fmt.Errorf("must have a positive window duration, e.g. 10/1m")
+	if err != nil || window < time.Millisecond {
+		return RateLimit{}, fmt.Errorf("must have a window duration of at least 1ms, e.g. 10/1m")
 	}
 	return RateLimit{Hits: hits, Window: window}, nil
 }

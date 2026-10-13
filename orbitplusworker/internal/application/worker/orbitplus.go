@@ -40,8 +40,33 @@ func (status OrbitPlusStatus) AcknowledgementEligible() bool {
 	return status == OrbitPlusAccepted
 }
 
+// OrbitPlusHealthResult carries the details of an OrbitPlus health check so
+// the caller can log clearly whether the server is down (unreachable) or
+// reachable but unhealthy, and include the endpoint, status code, and body.
+type OrbitPlusHealthResult struct {
+	// Endpoint is the URL that was probed (e.g. https://orbitplus.example/health).
+	Endpoint string
+	// Reachable is true when an HTTP response was received (even if non-2xx).
+	// False means the server is completely down or the network is unreachable.
+	Reachable bool
+	// Healthy is true only when the server responded with 2xx.
+	Healthy bool
+	// StatusCode is the HTTP status code, zero when the server is unreachable.
+	StatusCode int
+	// Body is the response body (trimmed), empty when unreachable.
+	Body string
+	// Detail carries the transport error message when Reachable is false.
+	Detail string
+}
+
 // OrbitPlusClient submits successful TripDetails and terminal failures to OrbitPlus.
 type OrbitPlusClient interface {
+	// CheckHealth reports whether OrbitPlus is reachable and healthy. The worker
+	// calls this before any outbound Bits request so a down OrbitPlus does not
+	// cause an expensive Bits fetch whose result could never be delivered. A
+	// non-nil error means OrbitPlus should be treated as unavailable; it is
+	// retryable so the delivery is retried rather than dead-lettered.
+	CheckHealth(ctx context.Context) (OrbitPlusHealthResult, error)
 	SendTripDetails(ctx context.Context, request TripDetailsRefreshRequest) (OrbitPlusStatus, error)
 	SendTripDetailsDLQ(ctx context.Context, request TripDetailsDLQRequest) error
 }

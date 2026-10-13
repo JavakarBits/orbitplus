@@ -53,6 +53,21 @@ func (repository *QueueMetrixRepository) ListActiveOperators(ctx context.Context
 	return repository.listOperatorsInPartition(ctx, 1)
 }
 
+// FindOperator returns one operator by code, searching the active then inactive
+// partition. The second return reports whether the operator exists. It is used
+// by the cold cache refresh to resolve an operator's zone code.
+func (repository *QueueMetrixRepository) FindOperator(ctx context.Context, operatorCode string) (domain.Operator, bool, error) {
+	operatorCode, err := validOperatorCode(operatorCode)
+	if err != nil {
+		return domain.Operator{}, false, err
+	}
+	operator, _, found, err := repository.operatorByCode(ctx, operatorCode)
+	if err != nil {
+		return domain.Operator{}, false, err
+	}
+	return operator, found, nil
+}
+
 // ListOperators returns all operators from the active and inactive partitions.
 func (repository *QueueMetrixRepository) ListOperators(ctx context.Context) ([]domain.Operator, error) {
 	active, err := repository.listOperatorsInPartition(ctx, 1)

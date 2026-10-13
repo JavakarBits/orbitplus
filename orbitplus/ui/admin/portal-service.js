@@ -1,4 +1,4 @@
-export const ADMIN_ENDPOINTS = Object.freeze({ dashboard: "/orbitplus/api/admin/dashboard", tripHistory: "/orbitplus/api/admin/trip-history", operators: "/orbitplus/api/admin/operators", cache: "/orbitplus/cache", cacheKeys: "/orbitplus/api/cache", cacheValue: "/orbitplus/api/cache/value", reports: "/orbitplus/reports", rabbitmq: "/orbitplus/rabbitmq", routeMetadata: "/orbitplus/api/tables/route-metadata" });
+export const ADMIN_ENDPOINTS = Object.freeze({ dashboard: "/orbitplus/api/admin/dashboard", tripHistory: "/orbitplus/api/admin/trip-history", operators: "/orbitplus/api/admin/operators", cache: "/orbitplus/cache", cacheKeys: "/orbitplus/api/cache", cacheValue: "/orbitplus/api/cache/value", logs: "/orbitplus/api/admin/logs", logContent: "/orbitplus/api/admin/logs/content", systemHealth: "/orbitplus/api/dashboard/system-health", reports: "/orbitplus/reports", rabbitmq: "/orbitplus/rabbitmq", routeMetadata: "/orbitplus/api/tables/route-metadata" });
 
 async function readAPI(fetcher, endpoint, signal) {
   const response = await fetcher(endpoint, { credentials: "same-origin", signal });
@@ -36,6 +36,12 @@ export class AdminPortalService {
   operators({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.operators, signal); }
   createOperator(operatorCode, zoneCode) { return writeAPI(this.fetcher, ADMIN_ENDPOINTS.operators, "POST", { operatorCode, zoneCode }); }
   setOperatorActive(operatorCode, active) { return writeAPI(this.fetcher, `${ADMIN_ENDPOINTS.operators}/${encodeURIComponent(operatorCode)}`, "PATCH", { active }); }
+  logs({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.logs, signal); }
+  systemHealth({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.systemHealth, signal); }
+  logContent({ name, source, signal } = {}) {
+    const query = new URLSearchParams({ name: name || "", source: source || "" });
+    return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.logContent}?${query}`, signal);
+  }
 }
 
 export const adminPortalService = new AdminPortalService();

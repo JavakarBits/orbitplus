@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"orbitplusworker/internal/domain"
@@ -29,18 +30,46 @@ type searchBusMapIdentifiers struct {
 func (worker *TripDetailsRefreshWorker) fetchSearchAndBusMaps(ctx context.Context, message domain.TripDetailsRefreshMessage, credential BitsOperatorCredential) (BitsTripDetailsResponse, error) {
 	searchMessage := message
 	searchMessage.ActionType = domain.ActionSearch
+	// Search is the first outbound call in this workflow and consumes its own
+	// slot; each BusMap below does the same.
+	if err := worker.awaitZoneRateLimit(ctx, message); err != nil {
+		return BitsTripDetailsResponse{}, err
+	}
+	slog.Info("Bits SearchBusMap Search request started",
+		"operator", message.OperatorCode,
+		"from", message.FromCode,
+		"to", message.ToCode,
+		"tripDate", message.TripDate,
+	)
 	searchResponse, err := worker.source.FetchTripDetails(ctx, BitsTripDetailsRequest{Message: searchMessage, Credential: credential})
 	if err != nil {
+		slog.Info("Bits SearchBusMap Search request completed",
+			"operator", message.OperatorCode,
+			"success", false,
+		)
 		return BitsTripDetailsResponse{}, err
 	}
 	if len(searchResponse.Body) == 0 {
+		slog.Info("Bits SearchBusMap Search request completed",
+			"operator", message.OperatorCode,
+			"success", false,
+		)
 		return BitsTripDetailsResponse{}, fmt.Errorf("Bits Search response is empty")
 	}
 
 	envelope, searchEntries, err := decodeSearchResponse(searchResponse.Body)
 	if err != nil {
+		slog.Info("Bits SearchBusMap Search request completed",
+			"operator", message.OperatorCode,
+			"success", false,
+		)
 		return BitsTripDetailsResponse{}, err
 	}
+	slog.Info("Bits SearchBusMap Search request completed",
+		"operator", message.OperatorCode,
+		"success", true,
+		"entries", len(searchEntries),
+	)
 	combinedEntries := make([]any, 0, len(searchEntries))
 	for index, searchEntry := range searchEntries {
 		identifiers, err := searchEntryIdentifiers(searchEntry)
@@ -48,8 +77,7 @@ func (worker *TripDetailsRefreshWorker) fetchSearchAndBusMaps(ctx context.Contex
 			return BitsTripDetailsResponse{}, fmt.Errorf("Bits Search entry %d is invalid: %w", index, err)
 		}
 
-		// The delivery-level rate-limit slot acquired by Handle covers Search.
-		// Every additional BusMap GET consumes its own slot so a fan-out cannot
+		// Every BusMap GET consumes its own slot so fan-out and retries cannot
 		// bypass the per-zone request quota.
 		if err := worker.awaitZoneRateLimit(ctx, message); err != nil {
 			return BitsTripDetailsResponse{}, err
@@ -61,20 +89,58 @@ func (worker *TripDetailsRefreshWorker) fetchSearchAndBusMaps(ctx context.Contex
 		busMapMessage.ToStationCode = identifiers.toCode
 		busMapMessage.TravelDate = identifiers.travelDate
 
+		slog.Info("Bits SearchBusMap BusMap request started",
+			"operator", message.OperatorCode,
+			"entryIndex", index,
+			"tripCode", identifiers.tripCode,
+			"from", identifiers.fromCode,
+			"to", identifiers.toCode,
+			"travelDate", identifiers.travelDate,
+		)
 		busMapResponse, err := worker.source.FetchTripDetails(ctx, BitsTripDetailsRequest{Message: busMapMessage, Credential: credential})
 		if err != nil {
+			slog.Info("Bits SearchBusMap BusMap request completed",
+				"operator", message.OperatorCode,
+				"entryIndex", index,
+				"tripCode", identifiers.tripCode,
+				"success", false,
+			)
 			return BitsTripDetailsResponse{}, err
 		}
 		if len(busMapResponse.Body) == 0 {
+			slog.Info("Bits SearchBusMap BusMap request completed",
+				"operator", message.OperatorCode,
+				"entryIndex", index,
+				"tripCode", identifiers.tripCode,
+				"success", false,
+			)
 			return BitsTripDetailsResponse{}, fmt.Errorf("Bits BusMap response is empty for Search entry %d", index)
 		}
 		busMapEntry, err := decodeBusMapResponse(busMapResponse.Body)
 		if err != nil {
+			slog.Info("Bits SearchBusMap BusMap request completed",
+				"operator", message.OperatorCode,
+				"entryIndex", index,
+				"tripCode", identifiers.tripCode,
+				"success", false,
+			)
 			return BitsTripDetailsResponse{}, fmt.Errorf("Bits BusMap response for Search entry %d is invalid: %w", index, err)
 		}
 		if err := validateBusMapIdentity(busMapEntry, identifiers); err != nil {
+			slog.Info("Bits SearchBusMap BusMap request completed",
+				"operator", message.OperatorCode,
+				"entryIndex", index,
+				"tripCode", identifiers.tripCode,
+				"success", false,
+			)
 			return BitsTripDetailsResponse{}, fmt.Errorf("Bits BusMap response for Search entry %d does not match Search: %w", index, err)
 		}
+		slog.Info("Bits SearchBusMap BusMap request completed",
+			"operator", message.OperatorCode,
+			"entryIndex", index,
+			"tripCode", identifiers.tripCode,
+			"success", true,
+		)
 
 		combined := mergeJSONObjects(searchEntry, busMapEntry)
 		// Search is the routing authority. Preserve its identifiers even when a
@@ -94,6 +160,11 @@ func (worker *TripDetailsRefreshWorker) fetchSearchAndBusMaps(ctx context.Contex
 	if err != nil {
 		return BitsTripDetailsResponse{}, fmt.Errorf("encode combined Search and BusMap response: %w", err)
 	}
+	slog.Info("Bits SearchBusMap workflow completed",
+		"operator", message.OperatorCode,
+		"searchEntries", len(searchEntries),
+		"combinedEntries", len(combinedEntries),
+	)
 	return BitsTripDetailsResponse{Body: body}, nil
 }
 

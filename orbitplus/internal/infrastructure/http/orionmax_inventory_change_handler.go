@@ -17,8 +17,12 @@ type OrionmaxInventoryChangeHandler struct {
 }
 
 // NewOrionmaxInventoryChangeHandler constructs an inventory-change HTTP handler.
-func NewOrionmaxInventoryChangeHandler(service *master.OrionmaxInventoryEventService) *OrionmaxInventoryChangeHandler {
-	return &OrionmaxInventoryChangeHandler{service: service, logger: log.Default()}
+// A nil logger falls back to the process default.
+func NewOrionmaxInventoryChangeHandler(service *master.OrionmaxInventoryEventService, logger *log.Logger) *OrionmaxInventoryChangeHandler {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &OrionmaxInventoryChangeHandler{service: service, logger: logger}
 }
 
 // ServeHTTP accepts one valid JSON inventory-change event with an activity_type query parameter.
