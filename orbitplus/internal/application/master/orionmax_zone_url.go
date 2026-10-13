@@ -32,10 +32,14 @@ func zoneURLFor(zoneCode string) (string, bool) {
 	if !exists {
 		return "", false
 	}
-	// Deployments can align OrbitPlus live reads with the same BITS environment
-	// used by Java fallback/block/confirm without changing production defaults.
-	// Example: BITS_ZONE_BITS_URL=https://dev-stage.ezeebits.in
+	// Per-zone override takes precedence, e.g. BITS_ZONE_BITS_URL=https://dev-stage.ezeebits.in
 	if override := strings.TrimSpace(os.Getenv("BITS_ZONE_" + strings.ToUpper(zoneCode) + "_URL")); override != "" {
+		return strings.TrimRight(override, "/"), true
+	}
+	// Global override points every zone at one BITS environment (e.g. dev-stage),
+	// so worker refresh jobs, live reads, and the Java block/confirm path all hit
+	// the same host and operate on the same trip data.
+	if override := strings.TrimSpace(os.Getenv("BITS_ZONE_DEFAULT_URL")); override != "" {
 		return strings.TrimRight(override, "/"), true
 	}
 	return zoneURLByCode[zoneCode], true

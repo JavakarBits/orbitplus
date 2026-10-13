@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // AppEnvironment identifies the deployment environment the process runs in.
@@ -22,6 +23,13 @@ type RuntimeConfig struct {
 	AppEnvironment     AppEnvironment
 	APIPort            int
 	UIAccessToken      string
+	// LogDir is the directory where the service writes its application log
+	// file in addition to stderr. It defaults to "logs" and is also the
+	// directory the admin Logs page reads from.
+	LogDir             string
+	// WorkerLogDir is an optional second directory the admin Logs page reads so
+	// Worker logs appear alongside the Master's. Empty disables it.
+	WorkerLogDir       string
 	Storage            *StorageConfig
 	Queue              *QueueConfig
 	RabbitMQManagement *RabbitMQManagementConfig
@@ -37,7 +45,7 @@ type RuntimeConfig struct {
 
 // DefaultRuntimeConfig returns the configuration used when no environment variables are set.
 func DefaultRuntimeConfig() RuntimeConfig {
-	return RuntimeConfig{AppEnvironment: Development, APIPort: 8082}
+	return RuntimeConfig{AppEnvironment: Development, APIPort: 8082, LogDir: "logs"}
 }
 
 // LoadRuntimeConfig reads local .env settings, then runtime configuration.
@@ -57,6 +65,10 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		config.APIPort = port
 	}
 	config.UIAccessToken = os.Getenv("ORBITPLUS_UI_ACCESS_TOKEN")
+	if value := strings.TrimSpace(os.Getenv("LOG_DIR")); value != "" {
+		config.LogDir = value
+	}
+	config.WorkerLogDir = strings.TrimSpace(os.Getenv("WORKER_LOG_DIR"))
 
 	storage, err := loadStorageConfig()
 	if err != nil {

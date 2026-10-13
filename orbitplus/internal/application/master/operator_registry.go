@@ -24,4 +24,7 @@ type OperatorRegistry interface {
 	ListActiveOperators(context.Context) ([]domain.Operator, error)
 	ListOperators(context.Context) ([]domain.Operator, error)
 	SetOperatorActive(context.Context, string, bool) (domain.Operator, error)
+	// FindOperator returns one operator by code and whether it exists. Used by
+	// the cold cache refresh to resolve an operator's zone code.
+	FindOperator(context.Context, string) (domain.Operator, bool, error)
 }

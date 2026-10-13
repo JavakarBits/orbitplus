@@ -64,10 +64,13 @@ func (auth *UIAccessAuth) loginPost(response http.ResponseWriter, request *http.
 	http.Redirect(response, request, "/orbitplus/", http.StatusSeeOther)
 }
 
-// Logout clears the UI session cookie.
+// Logout clears the UI session cookie. It accepts both POST (the UI form and
+// fetch call) and GET (a direct address-bar visit or plain link) so that
+// signing out never dead-ends on a "Method Not Allowed" page. Clearing a
+// session cookie is idempotent, so permitting GET carries no meaningful risk.
 func (auth *UIAccessAuth) Logout(response http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		response.Header().Set("Allow", http.MethodPost)
+	if request.Method != http.MethodPost && request.Method != http.MethodGet {
+		response.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
 		http.Error(response, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}

@@ -64,7 +64,13 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 	}
 	parsedMessage, err := parseTripDetailsRefreshMessage(delivery)
 	if err != nil {
-		return ExecutionResult{Status: ExecutionInvalidEnvelope, Err: err}
+		// A malformed message can never become valid. ACK (discard) it so a
+		// poison message does not hold a prefetch slot and block the queue.
+		slog.Warn("discarding invalid TripDetails refresh envelope", "error", err.Error())
+		if ackErr := delivery.Ack(ctx); ackErr != nil {
+			return worker.operationError(ExecutionAckError, ackErr)
+		}
+		return ExecutionResult{Status: ExecutionInvalidEnvelope, Acknowledged: true, Err: err}
 	}
 	message = parsedMessage
 	slog.Info("TripDetails refresh started", "actionType", message.ActionType, "operator", message.OperatorCode)
@@ -113,6 +119,12 @@ func (worker *TripDetailsRefreshWorker) processOnce(ctx context.Context, message
 	credential, err := worker.resolveCredential(ctx, message)
 	if err != nil {
 		return ExecutionCredentialError, "Orbit operator credential could not be resolved.", "", IsRetryableError(err)
+	}
+	// Verify that OrbitPlus is reachable before making the expensive Bits
+	// call. If OrbitPlus is down the Bits result could never be delivered,
+	// so the attempt is retried later rather than wasting a rate-limit slot.
+	if err := worker.checkOrbitPlusHealth(ctx, message); err != nil {
+		return ExecutionOrbitPlusUnhealthy, "OrbitPlus is not reachable; Bits call skipped.", "", IsRetryableError(err)
 	}
 	sourceResult, err := worker.fetchTripDetails(ctx, message, credential)
 	if err != nil {
@@ -235,6 +247,42 @@ func (worker *TripDetailsRefreshWorker) resolveCredential(ctx context.Context, m
 		return BitsOperatorCredential{}, err
 	}
 	return credential, nil
+}
+
+// checkOrbitPlusHealth verifies that OrbitPlus is reachable before the worker
+// spends a Bits rate-limit slot. The check is intentionally lightweight (GET
+// /health) so that a slow OrbitPlus does not delay the decision significantly.
+func (worker *TripDetailsRefreshWorker) checkOrbitPlusHealth(ctx context.Context, message domain.TripDetailsRefreshMessage) error {
+	slog.Info("OrbitPlus health check started", "actionType", message.ActionType, "operator", message.OperatorCode)
+	health, err := worker.orbitPlusClient.CheckHealth(ctx)
+	if err != nil {
+		if !health.Reachable {
+			slog.Warn("OrbitPlus server is DOWN; skipping Bits call",
+				"actionType", message.ActionType,
+				"operator", message.OperatorCode,
+				"endpoint", health.Endpoint,
+				"detail", health.Detail,
+			)
+		} else {
+			slog.Warn("OrbitPlus server is UNHEALTHY; skipping Bits call",
+				"actionType", message.ActionType,
+				"operator", message.OperatorCode,
+				"endpoint", health.Endpoint,
+				"statusCode", health.StatusCode,
+				"responseBody", health.Body,
+			)
+		}
+		return err
+	}
+	slog.Info("OrbitPlus health check completed",
+		"actionType", message.ActionType,
+		"operator", message.OperatorCode,
+		"endpoint", health.Endpoint,
+		"statusCode", health.StatusCode,
+		"responseBody", health.Body,
+		"serverStatus", "UP",
+	)
+	return nil
 }
 
 func (worker *TripDetailsRefreshWorker) fetchTripDetails(ctx context.Context, message domain.TripDetailsRefreshMessage, credential BitsOperatorCredential) (BitsTripDetailsResponse, error) {

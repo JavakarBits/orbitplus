@@ -39,7 +39,7 @@ func newLiveHandler(t *testing.T, fetcher master.BitsTripDetailsFetcher) *TripDe
 	if err != nil {
 		t.Fatalf("NewCacheFreshnessVerifier: %v", err)
 	}
-	return NewTripDetailsReadHandler(nil, verifier)
+	return NewTripDetailsReadHandler(nil, verifier, nil, nil)
 }
 
 func serveLiveRequest(t *testing.T, handler *TripDetailsReadHandler, requestPath string) *httptest.ResponseRecorder {
