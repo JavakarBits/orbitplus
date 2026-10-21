@@ -32,6 +32,46 @@ func NewClient(endpoint string, maxResponseBytes int64, httpClient *http.Client,
 	return &OrbitPlusClient{endpoint: parsed, maxResponse: maxResponseBytes, client: httpClient}, nil
 }
 
+// CheckHealth performs a lightweight GET against OrbitPlus's /health endpoint.
+// Any transport error or non-2xx response is reported as a retryable error so
+// the worker skips the Bits fetch and retries the delivery later rather than
+// burning a Bits request whose result OrbitPlus could not accept.
+//
+// The returned HealthResult carries the endpoint and, when the server
+// responded, its HTTP status code and body so the caller can log precisely
+// whether the server is unreachable (down) or reachable but unhealthy.
+func (client *OrbitPlusClient) CheckHealth(ctx context.Context) (worker.OrbitPlusHealthResult, error) {
+	requestURL := *client.endpoint
+	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + "/health"
+	requestURL.RawQuery = ""
+	requestURL.Fragment = ""
+	result := worker.OrbitPlusHealthResult{Endpoint: requestURL.String()}
+
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return result, fmt.Errorf("build OrbitPlus health request: %w", err)
+	}
+	httpRequest.Header.Set("Accept", "application/json")
+	response, err := client.client.Do(httpRequest)
+	if err != nil {
+		// No HTTP response at all: the server is down or unreachable.
+		result.Reachable = false
+		result.Detail = err.Error()
+		return result, worker.NewRetryableError("OrbitPlus server is down or unreachable")
+	}
+	defer response.Body.Close()
+	result.Reachable = true
+	result.StatusCode = response.StatusCode
+	body, _ := io.ReadAll(io.LimitReader(response.Body, client.maxResponse+1))
+	result.Body = strings.TrimSpace(string(body))
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		result.Healthy = false
+		return result, worker.NewRetryableError(fmt.Sprintf("OrbitPlus is unhealthy (HTTP %d)", response.StatusCode))
+	}
+	result.Healthy = true
+	return result, nil
+}
+
 func (client *OrbitPlusClient) SendTripDetails(ctx context.Context, request worker.TripDetailsRefreshRequest) (worker.OrbitPlusStatus, error) {
 	if err := request.Message.Validate(); err != nil {
 		return "", fmt.Errorf("OrbitPlus request is invalid: %w", err)

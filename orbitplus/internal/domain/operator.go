@@ -11,3 +11,15 @@ type Operator struct {
 func (operator Operator) Active() bool {
 	return operator.ActiveFlag == 1
 }
+
+// OperatorCredential is the BITS credential resolved from the Orbit credential
+// service for one operator. It is credential material: never log Username or
+// APIToken.
+type OperatorCredential struct {
+	OperatorCode string
+	ZoneCode     string
+	ZoneURL      string
+	Username     string
+	APIToken     string
+	ActiveFlag   int
+}

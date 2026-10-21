@@ -1,4 +1,4 @@
-import { adminPortalService, ADMIN_ENDPOINTS } from "/orbitplus/admin/portal-service.js?v=8";
+import { adminPortalService, ADMIN_ENDPOINTS } from "/orbitplus/admin/portal-service.js?v=14";
 
 const mount = document.getElementById("admin-portal");
 const routes = [
@@ -10,12 +10,17 @@ const routes = [
   { id: "inventory-events", label: "Inventory Events", icon: "⇄" },
   { id: "failures", label: "Failures & DLQ", icon: "⚠" },
   { id: "dragonfly", label: "Dragonfly (Cache)", icon: "◆" },
+  { id: "cache-settings", label: "Cache Settings", icon: "⚙" },
   { id: "cassandra", label: "Cassandra (Metadata)", icon: "▤" },
   { id: "operators", label: "Operators", icon: "♙" },
+  { id: "cache-freshness", label: "Cache Freshness", icon: "❄" },
   { id: "memory", label: "Memory", icon: "▣" },
   { id: "logs", label: "Logs", icon: "▦" },
   { id: "reports", label: "Reports", icon: "▥" }
 ];
+// Report sub-pages reachable from the Reports section. They render inside the
+// SPA (so the sidebar stays) but are not top-level sidebar items themselves.
+const reportRoutes = ["top-routes", "queue-metrics", "queue-analytics", "busmap-analytics"];
 const SERIES = ["#6c5ce7", "#3f7ff0", "#16a06a", "#dd9016", "#d94b5c", "#1899b0", "#a05bd0", "#7b879e"];
 
 let controller;
@@ -30,20 +35,25 @@ const clock = (value) => value ? new Date(value).toLocaleTimeString([], { hour: 
 const capability = (name) => overview?.[name] || { status: "source_unavailable", detail: "This telemetry is unavailable." };
 const live = (name) => capability(name).status === "available";
 const data = (name) => capability(name).data || {};
-const route = () => { const id = location.pathname.split("/").filter(Boolean).at(-1); return routes.some((item) => item.id === id) ? id : "dashboard"; };
+const route = () => { const id = location.pathname.split("/").filter(Boolean).at(-1); return (routes.some((item) => item.id === id) || reportRoutes.includes(id)) ? id : "dashboard"; };
 const href = (id) => id === "dashboard" ? "/orbitplus/admin" : `/orbitplus/admin/${id}`;
+// hrefFor resolves a nav item's link: an external page URL when the item
+// declares one, otherwise the in-SPA section path.
+const hrefFor = (item) => item.url ? item.url : href(item.id);
 const chip = (value, tone) => `<span class="chip ${tone || ""}">${esc(value)}</span>`;
 const na = (name, link, linkText) => { const source = capability(name); return `<div class="na-box"><div><b>${esc(source.status.replaceAll("_", " "))}</b>${esc(source.detail)}${link ? `<br><a href="${link}">${esc(linkText)}</a>` : ""}</div></div>`; };
 
 function shell(current, content) {
-  const nav = routes.map((item) => `<a href="${href(item.id)}"${current === item.id ? ' aria-current="page"' : ""}><i>${item.icon}</i>${esc(item.label)}</a>`).join("");
+  const nav = routes.map((item) => `<a href="${hrefFor(item)}"${current === item.id ? ' aria-current="page"' : ""}><i>${item.icon}</i>${esc(item.label)}</a>`).join("");
   const degraded = ["queueMetrics", "rabbitmq", "tripDetailsFreshness"].filter((name) => capability(name).status === "source_unavailable");
   const status = live("runtime") ? (degraded.length ? "Degraded telemetry" : "Core services responding") : "Runtime unavailable";
   return `<div class="app"><aside class="side"><a class="side-brand" href="/orbitplus/admin"><i>◆</i>OrbitPlus</a><p class="side-label">ADMIN PORTAL</p><nav class="nav">${nav}</nav><div class="side-foot"><p class="side-label" style="padding:0">SYSTEM STATUS</p><b><i></i>${esc(status)}</b><small>OrbitPlus · ${esc(data("runtime").goVersion || "runtime")}</small></div></aside><main class="main">${top(current)}<div class="body">${content}</div></main></div>`;
 }
 
+const reportLabels = { "top-routes": "Top Routes", "queue-metrics": "Queue Metrics", "queue-analytics": "Queue Analytics", "busmap-analytics": "Busmap Data Analytics" };
+
 function top(current) {
-  const page = routes.find((item) => item.id === current);
+  const page = routes.find((item) => item.id === current) || (reportLabels[current] ? { label: reportLabels[current] } : null);
   const subtitle = current === "dashboard" ? "Live overview of the TripDetails refresh system" : "Live data where a backend source exists";
   const failures = live("queueMetrics") ? (data("queueMetrics").recentFailures || []).length : 0;
   return `<header class="top"><div class="top-l"><button class="burger" id="burger" type="button" title="Navigation">☰</button><div><h1>${esc(page?.label || "Dashboard")}</h1><p>${esc(subtitle)}</p></div></div><div class="top-r"><span class="pill">◷ Last 24 hours</span><button class="bell" id="bell" type="button" title="Failed records in sample">⌁${failures ? `<span>${failures}</span>` : ""}</button><div class="user-menu"><button class="user" id="user-trigger" type="button" aria-haspopup="true"><i>A</i><span class="user-meta"><b>Admin</b><small>OrbitPlus</small></span><em class="caret">▾</em></button><div class="user-dropdown" id="user-dropdown" role="menu"><nav class="user-dropdown-list"><button type="button" id="logout-item" role="menuitem" class="danger"><i>⎋</i>Logout</button></nav></div></div></div></header>`;
@@ -653,6 +663,562 @@ async function runRouteMetadataLookup() {
   }
 }
 
+const cacheSettings = { form: { hotMaxAgeHours: 4, warmMaxAgeHours: 6, windowEnabled: false, windowStart: "06:00", windowEnd: "22:00" }, current: null, state: "idle", message: "", saveState: "idle", saveMessage: "" };
+let cacheSettingsController;
+const CACHE_SETTINGS_FIELDS = [["cs-hot", "hotMaxAgeHours"], ["cs-warm", "warmMaxAgeHours"], ["cs-window-enabled", "windowEnabled"], ["cs-window-start", "windowStart"], ["cs-window-end", "windowEnd"]];
+
+function cacheSettingsSummary() {
+  const current = cacheSettings.current;
+  if (!current) return "";
+  const windowText = current.windowEnabled ? `cache ${esc(current.windowStart)}–${esc(current.windowEnd)} IST, live outside` : "cache on 24/7";
+  const saved = current.updatedAt ? ` · last saved ${new Date(current.updatedAt).toLocaleString()}` : "";
+  return `<div class="cs-summary"><span class="chip">Hot ≤ ${esc(current.hotMaxAgeHours)}h</span><span class="chip">Warm ≤ ${esc(current.warmMaxAgeHours)}h</span>${current.windowEnabled ? chip(windowText, "") : chip(windowText, "na")}<small>${esc(current.timezone || "Asia/Kolkata (IST)")}${saved}</small></div>`;
+}
+
+function cacheSettingsBody() {
+  if (cacheSettings.state === "loading" && !cacheSettings.current) return `<div class="na-box"><div>Loading cache settings…</div></div>`;
+  if (cacheSettings.state === "error" && !cacheSettings.current) return `<div class="na-box"><div><b>Cache settings unavailable</b>${esc(cacheSettings.message || "Unable to load cache settings. Create the cache_settings table and restart the Master.")}</div></div>`;
+  const form = cacheSettings.form;
+  const saving = cacheSettings.saveState === "saving";
+  const timeDisabled = form.windowEnabled ? "" : " disabled";
+  const saveNote = cacheSettings.saveState === "error" ? `<span class="cs-msg bad">${esc(cacheSettings.saveMessage)}</span>` : cacheSettings.saveState === "done" ? `<span class="cs-msg ok">Saved ✓ Applied immediately.</span>` : "";
+  return `${cacheSettingsSummary()}
+  <form class="cs-form" id="cache-settings-form" autocomplete="off">
+    <fieldset class="cs-group">
+      <legend>Freshness thresholds</legend>
+      <p class="note">Age = now − last update. Within Hot → serve Hot; within Warm → serve Warm; older → Cold (refresh from BITS). Hot must be ≤ Warm.</p>
+      <div class="cs-fields">
+        <label>Hot max age (hours)<input id="cs-hot" type="number" min="0.1" step="0.1" value="${esc(form.hotMaxAgeHours)}"${saving ? " disabled" : ""}></label>
+        <label>Warm max age (hours)<input id="cs-warm" type="number" min="0.1" step="0.1" value="${esc(form.warmMaxAgeHours)}"${saving ? " disabled" : ""}></label>
+      </div>
+    </fieldset>
+    <fieldset class="cs-group">
+      <legend>Cache window (IST)</legend>
+      <p class="note">Off = cache on 24/7. On = cache only during the hours below; outside them every read goes live to BITS. A start later than the end wraps past midnight (e.g. 22:00–06:00).</p>
+      <div class="cs-fields">
+        <label>Cache window<select id="cs-window-enabled"${saving ? " disabled" : ""}><option value="false"${form.windowEnabled ? "" : " selected"}>Off — cache always on</option><option value="true"${form.windowEnabled ? " selected" : ""}>On — cache only in these hours</option></select></label>
+        <label>Cache start (IST)<input id="cs-window-start" type="time" value="${esc(form.windowStart)}"${timeDisabled}${saving ? " disabled" : ""}></label>
+        <label>Cache end (IST)<input id="cs-window-end" type="time" value="${esc(form.windowEnd)}"${timeDisabled}${saving ? " disabled" : ""}></label>
+      </div>
+    </fieldset>
+    <div class="cs-actions"><button type="submit"${saving ? " disabled" : ""}>${saving ? "Saving…" : "Save settings"}</button>${saveNote}</div>
+  </form>`;
+}
+
+function cacheSettingsPage() {
+  return `<section class="panel cs-panel" id="cache-settings-viewer"><div class="p-head"><div><h2>Cache settings</h2><p class="df-subtitle">Edit the Hot/Warm freshness thresholds and the daily IST cache window at runtime. Saved in the Master and applied immediately.</p></div><button class="df-refresh" id="cache-settings-refresh" type="button">Reload</button></div><div id="cache-settings-body">${cacheSettingsBody()}</div></section>`;
+}
+
+function bindCacheSettings() {
+  document.getElementById("cache-settings-refresh")?.addEventListener("click", () => loadCacheSettings());
+  document.getElementById("cache-settings-form")?.addEventListener("submit", (event) => { event.preventDefault(); saveCacheSettingsForm(); });
+  CACHE_SETTINGS_FIELDS.forEach(([id, key]) => {
+    const element = document.getElementById(id);
+    if (!element) return;
+    const handler = (event) => {
+      cacheSettings.form[key] = key === "windowEnabled" ? event.target.value === "true" : event.target.value;
+      if (key === "windowEnabled") paintCacheSettings();
+    };
+    element.addEventListener(key === "windowEnabled" ? "change" : "input", handler);
+  });
+}
+
+function paintCacheSettings() {
+  const target = document.getElementById("cache-settings-body");
+  if (target) { target.innerHTML = cacheSettingsBody(); bindCacheSettings(); }
+}
+
+function applyCacheSettings(payload) {
+  cacheSettings.current = payload;
+  cacheSettings.form = {
+    hotMaxAgeHours: payload.hotMaxAgeHours,
+    warmMaxAgeHours: payload.warmMaxAgeHours,
+    windowEnabled: Boolean(payload.windowEnabled),
+    windowStart: payload.windowStart || "06:00",
+    windowEnd: payload.windowEnd || "22:00"
+  };
+}
+
+async function loadCacheSettings() {
+  cacheSettingsController?.abort();
+  const activeController = new AbortController();
+  cacheSettingsController = activeController;
+  cacheSettings.state = "loading";
+  cacheSettings.message = "";
+  cacheSettings.saveState = "idle";
+  paintCacheSettings();
+  try {
+    const result = await adminPortalService.cacheSettings({ signal: activeController.signal });
+    if (cacheSettingsController !== activeController) return;
+    applyCacheSettings(result);
+    cacheSettings.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || cacheSettingsController !== activeController) return;
+    cacheSettings.state = "error";
+    cacheSettings.message = error.message || "Unable to load cache settings.";
+  } finally {
+    if (cacheSettingsController === activeController) {
+      cacheSettingsController = undefined;
+      paintCacheSettings();
+    }
+  }
+}
+
+async function saveCacheSettingsForm() {
+  const form = cacheSettings.form;
+  const hot = parseFloat(form.hotMaxAgeHours);
+  const warm = parseFloat(form.warmMaxAgeHours);
+  if (!(hot > 0) || !(warm > 0) || hot > warm) {
+    cacheSettings.saveState = "error";
+    cacheSettings.saveMessage = "Hot and Warm must be positive and Hot ≤ Warm.";
+    paintCacheSettings();
+    return;
+  }
+  cacheSettings.saveState = "saving";
+  cacheSettings.saveMessage = "";
+  paintCacheSettings();
+  try {
+    const result = await adminPortalService.saveCacheSettings({
+      hotMaxAgeHours: hot,
+      warmMaxAgeHours: warm,
+      windowEnabled: Boolean(form.windowEnabled),
+      windowStart: form.windowStart || "00:00",
+      windowEnd: form.windowEnd || "00:00"
+    });
+    applyCacheSettings(result);
+    cacheSettings.saveState = "done";
+  } catch (error) {
+    cacheSettings.saveState = "error";
+    cacheSettings.saveMessage = error.message || "Unable to save cache settings.";
+  } finally {
+    paintCacheSettings();
+  }
+}
+
+const freshnessCounts = { state: "idle", message: "", data: null, tier: "", entriesState: "idle", entriesMessage: "", entries: [], entriesCount: 0 };
+let freshnessController;
+let freshnessEntriesController;
+
+const ageText = (seconds) => {
+  if (seconds == null) return "—";
+  if (seconds < 60) return seconds + "s";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
+  return Math.floor(seconds / 86400) + "d " + Math.floor((seconds % 86400) / 3600) + "h";
+};
+
+function cacheFreshnessCards() {
+  const d = freshnessCounts.data;
+  if (freshnessCounts.state === "loading" && !d) return `<div class="na-box"><div>Loading cache freshness counts…</div></div>`;
+  if (freshnessCounts.state === "error") return `<div class="na-box"><div><b>Cache freshness unavailable</b>${esc(freshnessCounts.message || "Check Cassandra connectivity.")}</div></div>`;
+  if (!d) return `<div class="na-box"><div>No cache freshness data yet.</div></div>`;
+  const cards = [
+    ["❄", "Hot", num(d.hot), "Age ≤ " + d.hotMaxAge, "t-green", "hot"],
+    ["◐", "Warm", num(d.warm), d.hotMaxAge + " < age ≤ " + d.warmMaxAge, "t-amber", "warm"],
+    ["✖", "Cold", num(d.cold), "Age > " + d.warmMaxAge + " — refreshed from BITS", "t-red", "cold"],
+    ["Σ", "Total", num(d.total), "Unique trip stages", "t-violet", ""],
+  ];
+  return `<section class="kpis">${cards.map(([icon, label, value, note, tone, tier]) =>
+    `<article class="kpi ${tone}"${tier ? ` data-fresh-tier="${tier}" role="button" tabindex="0" style="cursor:pointer"` : ""}><i>${icon}</i><div><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div></article>`).join("")}</section>`;
+}
+
+function cacheFreshnessEntriesBlock() {
+  if (!freshnessCounts.tier) return "";
+  const title = `Trip stages (${esc(freshnessCounts.tier)})`;
+  if (freshnessCounts.entriesState === "loading") return `<section class="panel"><div class="p-head"><h2>${title}</h2><span class="tag">Loading…</span></div><div class="na-box"><div>Loading trip stages…</div></div></section>`;
+  if (freshnessCounts.entriesState === "error") return `<section class="panel"><div class="p-head"><h2>${title}</h2></div><div class="na-box"><div>${esc(freshnessCounts.entriesMessage || "Unavailable")}</div></div></section>`;
+  const rows = freshnessCounts.entries.map((e) => `<tr><td>${esc(e.operatorCode)}</td><td>${esc(e.tripCode)}</td><td>${esc(e.tripStageCode)}</td><td>${esc(e.tripDate)}</td><td>${esc(e.fromStation)}</td><td>${esc(e.toStation)}</td><td>${esc(e.updatedAt ? new Date(e.updatedAt).toLocaleString() : "—")}</td><td>${esc(ageText(e.ageSeconds))}</td></tr>`).join("");
+  return `<section class="panel"><div class="p-head"><h2>${title}</h2><span class="tag">${num(freshnessCounts.entriesCount)} ${freshnessCounts.entriesCount === 1 ? "entry" : "entries"}</span></div><div class="t-wrap"><table><thead><tr><th>Operator</th><th>Trip code</th><th>Stage</th><th>Trip date</th><th>From</th><th>To</th><th>Updated</th><th>Age</th></tr></thead><tbody>${rows || '<tr><td colspan="8">No trip stages in this tier.</td></tr>'}</tbody></table></div></section>`;
+}
+
+function cacheFreshnessPage() {
+  const observed = freshnessCounts.data?.observedAt ? new Date(freshnessCounts.data.observedAt).toLocaleString() : "now";
+  return `<section class="panel cf-panel" id="cache-freshness-viewer"><div class="p-head"><div><h2>Cache freshness</h2><p class="df-subtitle">Unique cached trip stages by age as of ${esc(observed)}. Click Hot, Warm, or Cold to list them.</p></div><button class="df-refresh" id="cache-freshness-refresh" type="button">Refresh</button></div>${cacheFreshnessCards()}</section>${cacheFreshnessEntriesBlock()}`;
+}
+
+function bindCacheFreshness() {
+  document.getElementById("cache-freshness-refresh")?.addEventListener("click", () => loadCacheFreshness());
+  document.querySelectorAll("[data-fresh-tier]").forEach((card) => {
+    const tier = card.dataset.freshTier;
+    card.addEventListener("click", () => loadFreshnessEntries(tier));
+    card.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); loadFreshnessEntries(tier); } });
+  });
+}
+
+function paintCacheFreshness() {
+  const target = document.getElementById("cache-freshness-viewer");
+  if (target) { target.outerHTML = cacheFreshnessPage(); bindCacheFreshness(); }
+}
+
+async function loadCacheFreshness() {
+  freshnessController?.abort();
+  const activeController = new AbortController();
+  freshnessController = activeController;
+  freshnessCounts.state = "loading";
+  freshnessCounts.message = "";
+  paintCacheFreshness();
+  try {
+    freshnessCounts.data = await adminPortalService.cacheFreshness({ signal: activeController.signal });
+    if (freshnessController !== activeController) return;
+    freshnessCounts.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || freshnessController !== activeController) return;
+    freshnessCounts.state = "error";
+    freshnessCounts.message = error.message || "Unable to load cache freshness.";
+  } finally {
+    if (freshnessController === activeController) { freshnessController = undefined; paintCacheFreshness(); }
+  }
+}
+
+async function loadFreshnessEntries(tier) {
+  freshnessEntriesController?.abort();
+  const activeController = new AbortController();
+  freshnessEntriesController = activeController;
+  freshnessCounts.tier = tier;
+  freshnessCounts.entriesState = "loading";
+  freshnessCounts.entriesMessage = "";
+  paintCacheFreshness();
+  try {
+    const result = await adminPortalService.cacheFreshnessEntries({ tier, signal: activeController.signal });
+    if (freshnessEntriesController !== activeController) return;
+    freshnessCounts.entries = result.entries || [];
+    freshnessCounts.entriesCount = result.count || 0;
+    freshnessCounts.entriesState = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || freshnessEntriesController !== activeController) return;
+    freshnessCounts.entriesState = "error";
+    freshnessCounts.entriesMessage = error.message || "Unable to load trip stages.";
+  } finally {
+    if (freshnessEntriesController === activeController) { freshnessEntriesController = undefined; paintCacheFreshness(); }
+  }
+}
+
+const topRoutes = { from: "", to: "", limit: 100, operator: "", zone: "", state: "idle", message: "", routes: [], scope: "" };
+let topRoutesController;
+const TOP_ROUTES_FIELDS = [["tr-from", "from"], ["tr-to", "to"], ["tr-limit", "limit"], ["tr-operator", "operator"], ["tr-zone", "zone"]];
+
+function topRoutesInitDates() {
+  if (topRoutes.from && topRoutes.to) return;
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const today = new Date(), plus7 = new Date(); plus7.setDate(today.getDate() + 7);
+  topRoutes.from = iso(today); topRoutes.to = iso(plus7);
+}
+
+function topRoutesVisible() {
+  const op = topRoutes.operator.trim().toLowerCase(), zone = topRoutes.zone.trim().toLowerCase();
+  return topRoutes.routes.filter((r) =>
+    (!op || (r.operators || []).some((o) => o.toLowerCase().includes(op))) &&
+    (!zone || (r.zones || []).some((z) => z.toLowerCase().includes(zone))));
+}
+
+function topRoutesTable() {
+  if (topRoutes.state === "loading") return `<div class="na-box"><div>Running Top Routes report…</div></div>`;
+  if (topRoutes.state === "error") return `<div class="na-box"><div><b>Unable to load Top Routes</b>${esc(topRoutes.message)}</div></div>`;
+  const visible = topRoutesVisible();
+  if (!visible.length) return `<div class="na-box"><div>No loaded routes match the selected filters.</div></div>`;
+  const rows = visible.map((r, index) => `<tr><td>${index + 1}</td><td>${esc(r.fromStation)}</td><td>${esc(r.toStation)}</td><td>${esc(r.tripDate)}</td><td>${num(r.count)}</td><td>${esc((r.operators || []).join(", ") + (r.operatorCount ? " (" + r.operatorCount + ")" : ""))}</td><td>${esc((r.zones || []).join(", "))}</td><td>${esc(r.lastUpdatedAt ? new Date(r.lastUpdatedAt).toLocaleString() : "—")}</td></tr>`).join("");
+  return `<div class="t-wrap"><table><thead><tr><th>#</th><th>From</th><th>To</th><th>Trip date</th><th>Count</th><th>Operators</th><th>Zones</th><th>Last updated</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function topRoutesPage() {
+  topRoutesInitDates();
+  return `<section class="panel cm-viewer"><div class="p-head"><div><h2>Top Routes</h2><p class="cm-subtitle">Most-requested from/to pairs ranked by count within a trip-date range.</p></div><span class="tag na">bounded scan · queue_metrix</span></div>
+    <form class="cm-form" id="top-routes-form" autocomplete="off">
+      <label>From trip date<input id="tr-from" type="date" value="${esc(topRoutes.from)}"></label>
+      <label>To trip date<input id="tr-to" type="date" value="${esc(topRoutes.to)}"></label>
+      <label>Top N<input id="tr-limit" type="number" min="1" value="${esc(topRoutes.limit)}"></label>
+      <label>Operator<input id="tr-operator" type="search" placeholder="Filter operator" value="${esc(topRoutes.operator)}"></label>
+      <label>Zone<input id="tr-zone" type="search" placeholder="Filter zone" value="${esc(topRoutes.zone)}"></label>
+      <button type="submit">Run report</button>
+    </form>
+    ${topRoutes.scope ? `<p class="note">${esc(topRoutes.scope)}</p>` : ""}
+    <div id="top-routes-result">${topRoutesTable()}</div></section>`;
+}
+
+function bindTopRoutes() {
+  document.getElementById("top-routes-form")?.addEventListener("submit", (event) => { event.preventDefault(); loadTopRoutes(); });
+  TOP_ROUTES_FIELDS.forEach(([id, key]) => document.getElementById(id)?.addEventListener("input", (event) => {
+    topRoutes[key] = event.target.value;
+    if (key === "operator" || key === "zone") paintTopRoutesResult();
+  }));
+}
+
+function paintTopRoutesResult() {
+  const target = document.getElementById("top-routes-result");
+  if (target) target.innerHTML = topRoutesTable();
+}
+
+function paintTopRoutes() {
+  const target = document.querySelector(".cm-viewer");
+  if (target && route() === "top-routes") { target.outerHTML = topRoutesPage(); bindTopRoutes(); }
+}
+
+async function loadTopRoutes() {
+  TOP_ROUTES_FIELDS.forEach(([id, key]) => { const el = document.getElementById(id); if (el) topRoutes[key] = el.value; });
+  if (!topRoutes.from || !topRoutes.to) { topRoutes.state = "error"; topRoutes.message = "Pick both a from and to trip date."; paintTopRoutesResult(); return; }
+  topRoutesController?.abort();
+  const activeController = new AbortController();
+  topRoutesController = activeController;
+  topRoutes.state = "loading";
+  topRoutes.message = "";
+  paintTopRoutesResult();
+  try {
+    const result = await adminPortalService.topRoutes({ from: topRoutes.from, to: topRoutes.to, limit: topRoutes.limit || 100, signal: activeController.signal });
+    if (topRoutesController !== activeController) return;
+    topRoutes.routes = result.routes || [];
+    let note = "Filters apply to the loaded routes for trip dates " + result.fromDate + " to " + result.toDate + " (maximum " + topRoutes.routes.length + "). Examined " + result.rowsExamined + " records";
+    if (result.truncated) note += " (scan capped — results may be partial)";
+    topRoutes.scope = note + ".";
+    topRoutes.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || topRoutesController !== activeController) return;
+    topRoutes.state = "error";
+    topRoutes.message = error.message || "Top Routes report is unavailable.";
+  } finally {
+    if (topRoutesController === activeController) { topRoutesController = undefined; paintTopRoutes(); }
+  }
+}
+
+const queueMetrics = { state: "idle", message: "", jobs: [], status: "", activity: "", action: "", operator: "", reference: "" };
+let queueMetricsController;
+const QM_FIELDS = [["qm-status", "status"], ["qm-activity", "activity"], ["qm-action", "action"], ["qm-operator", "operator"], ["qm-reference", "reference"]];
+
+function qmOptions(values, selected) {
+  return [...new Set(values.filter(Boolean))].sort().map((v) => `<option value="${esc(v)}"${selected === v ? " selected" : ""}>${esc(v)}</option>`).join("");
+}
+
+function queueMetricsVisible() {
+  const ref = queueMetrics.reference.trim().toLowerCase();
+  return queueMetrics.jobs.filter((j) =>
+    (!queueMetrics.status || j.queueStatus === queueMetrics.status) &&
+    (!queueMetrics.activity || j.activityType === queueMetrics.activity) &&
+    (!queueMetrics.action || j.actionType === queueMetrics.action) &&
+    (!queueMetrics.operator || j.operatorCode === queueMetrics.operator) &&
+    (!ref || (j.referenceId || "").toLowerCase().includes(ref)));
+}
+
+function queueMetricsTable() {
+  if (queueMetrics.state === "loading") return `<div class="na-box"><div>Loading Queue Metrics records…</div></div>`;
+  if (queueMetrics.state === "error") return `<div class="na-box"><div><b>Unable to load Queue Metrics</b>${esc(queueMetrics.message)}</div></div>`;
+  const visible = queueMetricsVisible();
+  if (!visible.length) return `<div class="na-box"><div>No loaded records match the selected filters.</div></div>`;
+  const stamp = (v) => v ? new Date(v).toLocaleString() : "—";
+  const rows = visible.map((j) => `<tr><td>${esc(j.referenceId)}</td><td>${esc(j.activityType)}</td><td>${esc(j.actionType)}</td><td>${esc(j.operatorCode)}</td><td>${esc(j.fromStation)}</td><td>${esc(j.toStation)}</td><td>${esc(j.tripDate)}</td><td>${chip(j.queueStatus, j.queueStatus === "DEAD" ? "bad" : j.queueStatus === "COMPLETED" ? "" : "warn")}</td><td>${esc(stamp(j.queuedAt))}</td><td>${esc(stamp(j.completedAt))}</td><td title="${esc(j.failureMessage)}">${esc(j.failureMessage || "—")}</td></tr>`).join("");
+  return `<div class="t-wrap"><table><thead><tr><th>Ref ID</th><th>Activity</th><th>Action</th><th>Operator</th><th>From</th><th>To</th><th>Trip date</th><th>Status</th><th>Queued</th><th>Completed</th><th>Failure</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function queueMetricsPage() {
+  const jobs = queueMetrics.jobs;
+  const note = queueMetrics.state === "done" ? `Filters apply to the loaded Queue Metrics records (maximum ${num(jobs.length)}).` : "";
+  return `<section class="panel cm-viewer"><div class="p-head"><div><h2>Queue Metrics</h2><p class="cm-subtitle">Filter recent Queue Metrics lifecycle records.</p></div><button class="df-refresh" id="qm-refresh" type="button">Refresh</button></div>
+    <form class="cm-form" id="queue-metrics-form" autocomplete="off">
+      <label>Status<select id="qm-status"><option value="">All statuses</option>${["RECEIVED","QUEUED","COMPLETED","DEAD"].map((s) => `<option value="${s}"${queueMetrics.status === s ? " selected" : ""}>${s}</option>`).join("")}</select></label>
+      <label>Activity<select id="qm-activity"><option value="">All activities</option>${qmOptions(jobs.map((j) => j.activityType), queueMetrics.activity)}</select></label>
+      <label>Action<select id="qm-action"><option value="">All actions</option>${qmOptions(jobs.map((j) => j.actionType), queueMetrics.action)}</select></label>
+      <label>Operator<select id="qm-operator"><option value="">All operators</option>${qmOptions(jobs.map((j) => j.operatorCode), queueMetrics.operator)}</select></label>
+      <label>Reference ID<input id="qm-reference" type="search" placeholder="Search reference ID" value="${esc(queueMetrics.reference)}"></label>
+    </form>
+    ${note ? `<p class="note">${esc(note)}</p>` : ""}
+    <div id="queue-metrics-result">${queueMetricsTable()}</div></section>`;
+}
+
+function bindQueueMetrics() {
+  document.getElementById("qm-refresh")?.addEventListener("click", () => loadQueueMetrics());
+  QM_FIELDS.forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener(key === "reference" ? "input" : "change", (event) => { queueMetrics[key] = event.target.value; paintQueueMetricsResult(); });
+  });
+}
+
+function paintQueueMetricsResult() {
+  const target = document.getElementById("queue-metrics-result");
+  if (target) target.innerHTML = queueMetricsTable();
+}
+
+function paintQueueMetrics() {
+  const target = document.querySelector(".cm-viewer");
+  if (target && route() === "queue-metrics") { target.outerHTML = queueMetricsPage(); bindQueueMetrics(); }
+}
+
+async function loadQueueMetrics() {
+  queueMetricsController?.abort();
+  const activeController = new AbortController();
+  queueMetricsController = activeController;
+  queueMetrics.state = "loading";
+  queueMetrics.message = "";
+  paintQueueMetrics();
+  try {
+    const result = await adminPortalService.queueMetrics({ signal: activeController.signal });
+    if (queueMetricsController !== activeController) return;
+    queueMetrics.jobs = Array.isArray(result) ? result : (result.jobs || result.data || []);
+    queueMetrics.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || queueMetricsController !== activeController) return;
+    queueMetrics.state = "error";
+    queueMetrics.message = error.message || "Unable to load Queue Metrics.";
+  } finally {
+    if (queueMetricsController === activeController) { queueMetricsController = undefined; paintQueueMetrics(); }
+  }
+}
+
+const queueAnalytics = { state: "idle", message: "", data: null };
+let queueAnalyticsController;
+
+function queueAnalyticsBody() {
+  if (queueAnalytics.state === "loading" && !queueAnalytics.data) return `<div class="na-box"><div>Loading Queue Analytics…</div></div>`;
+  if (queueAnalytics.state === "error") return `<div class="na-box"><div><b>Queue Analytics unavailable</b>${esc(queueAnalytics.message)}</div></div>`;
+  const d = queueAnalytics.data;
+  if (!d) return `<div class="na-box"><div>No Queue Analytics available.</div></div>`;
+  const dur = (v) => v == null ? "—" : v < 60 ? v + " sec" : Math.round(v / 60) + " min";
+  const cards = [
+    ["⇄", "Jobs updated", num(d.loadedRecords), "Last 24h / loaded sample", "t-blue"],
+    ["✔", "Completion rate", (Number(d.completionRate || 0)).toFixed(1) + "%", "Last 24h / loaded sample", "t-green"],
+    ["◷", "Average completion", dur(d.averageCompletionSeconds), "Last 24h / loaded sample", "t-violet"],
+    ["⚠", "Dead jobs", num(d.dead), "Last 24h / loaded sample", "t-red"],
+  ];
+  const kpiHTML = cards.map(([icon, label, value, note, tone]) => `<article class="kpi ${tone}"><i>${icon}</i><div><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div></article>`).join("");
+  const statuses = [["Received", d.received], ["Queued", d.queued], ["Completed", d.completed], ["Dead", d.dead]];
+  const statusHTML = `<div class="counts">${statuses.map(([label, count]) => `<div><span>${esc(label)}</span><strong>${num(count)}</strong></div>`).join("")}</div>`;
+  const actions = d.actions || [];
+  const max = Math.max(1, ...actions.map((a) => a.count));
+  const actionHTML = actions.length ? `<div class="rows">${actions.map((a, i) => `<div class="row"><b>${esc(a.actionType)}</b><div class="track"><i style="width:${a.count / max * 100}%;background:${SERIES[i % SERIES.length]}"></i></div><strong>${num(a.count)}</strong></div>`).join("")}</div>` : `<div class="na-box"><div>No Queue Metrics updates in the last 24 hours.</div></div>`;
+  return `<section class="kpis">${kpiHTML}</section>
+    <section class="grid g-2">
+      <article class="panel"><div class="p-head"><h2>Current distribution</h2><span class="tag">24h sample</span></div>${statusHTML}</article>
+      <article class="panel"><div class="p-head"><h2>Action type volume</h2><span class="tag">24h sample</span></div>${actionHTML}</article>
+    </section>
+    <p class="note">${esc(d.scope || "")}</p>`;
+}
+
+function queueAnalyticsPage() {
+  return `<section class="panel"><div class="p-head"><div><h2>Queue Analytics</h2><p class="df-subtitle">Status distribution, completion performance, and action breakdown for the last 24h sample.</p></div><button class="df-refresh" id="qa-refresh" type="button">Refresh</button></div><div id="queue-analytics-body">${queueAnalyticsBody()}</div></section>`;
+}
+
+function bindQueueAnalytics() {
+  document.getElementById("qa-refresh")?.addEventListener("click", () => loadQueueAnalytics());
+}
+
+function paintQueueAnalytics() {
+  const target = document.getElementById("queue-analytics-body");
+  if (target) target.innerHTML = queueAnalyticsBody();
+}
+
+async function loadQueueAnalytics() {
+  queueAnalyticsController?.abort();
+  const activeController = new AbortController();
+  queueAnalyticsController = activeController;
+  queueAnalytics.state = "loading";
+  queueAnalytics.message = "";
+  paintQueueAnalytics();
+  try {
+    queueAnalytics.data = await adminPortalService.queueSummary({ signal: activeController.signal });
+    if (queueAnalyticsController !== activeController) return;
+    queueAnalytics.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || queueAnalyticsController !== activeController) return;
+    queueAnalytics.state = "error";
+    queueAnalytics.message = error.message || "Unable to load Queue Analytics.";
+  } finally {
+    if (queueAnalyticsController === activeController) { queueAnalyticsController = undefined; paintQueueAnalytics(); }
+  }
+}
+
+const busmap = { state: "idle", message: "", records: [], outcome: "", action: "", operator: "", repaired: "", trip: "" };
+let busmapController;
+const BUSMAP_FIELDS = [["bm-outcome", "outcome"], ["bm-action", "action"], ["bm-operator", "operator"], ["bm-repaired", "repaired"], ["bm-trip", "trip"]];
+
+function busmapOptions(values, selected) {
+  return [...new Set(values.filter(Boolean))].sort().map((v) => `<option value="${esc(v)}"${selected === v ? " selected" : ""}>${esc(v)}</option>`).join("");
+}
+
+function busmapVisible() {
+  const trip = busmap.trip.trim().toLowerCase();
+  return busmap.records.filter((r) =>
+    (!busmap.outcome || r.verificationOutcome === busmap.outcome) &&
+    (!busmap.action || r.actionType === busmap.action) &&
+    (!busmap.operator || r.operatorCode === busmap.operator) &&
+    (!busmap.repaired || String(r.cacheRepaired) === busmap.repaired) &&
+    (!trip || (r.tripCode || "").toLowerCase().includes(trip)));
+}
+
+function busmapTable() {
+  if (busmap.state === "loading") return `<div class="na-box"><div>Loading busmap data analytics…</div></div>`;
+  if (busmap.state === "error") return `<div class="na-box"><div><b>Unable to load busmap analytics</b>${esc(busmap.message)}</div></div>`;
+  const visible = busmapVisible();
+  if (!visible.length) return `<div class="na-box"><div>No loaded records match the selected filters.</div></div>`;
+  const stamp = (v) => v ? new Date(v).toLocaleString() : "—";
+  const rows = visible.map((r) => `<tr><td>${esc(stamp(r.detectedAt))}</td><td>${esc(r.operatorCode)}</td><td>${esc(r.actionType)}</td><td>${esc(r.tripCode)}</td><td>${esc(r.tripStageCode)}</td><td>${esc(r.fromCode)}</td><td>${esc(r.toCode)}</td><td>${esc(r.tripDate)}</td><td>${chip(r.verificationOutcome, r.verificationOutcome === "DIFFERENT" ? "warn" : "")}</td><td>${num(r.differenceCount)}</td><td>${r.cacheRepaired ? "Yes" : "No"}</td></tr>`).join("");
+  return `<div class="t-wrap"><table><thead><tr><th>Detected</th><th>Operator</th><th>Action</th><th>Trip code</th><th>Stage</th><th>From</th><th>To</th><th>Trip date</th><th>Outcome</th><th>Diffs</th><th>Repaired</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function busmapPage() {
+  const recs = busmap.records;
+  const note = busmap.state === "done" ? `Filters apply to the loaded difference records (maximum ${num(recs.length)}).` : "";
+  return `<section class="panel cm-viewer"><div class="p-head"><div><h2>Busmap Data Analytics</h2><p class="cm-subtitle">Cache-versus-BITS differences recorded when a live read found the cache stale.</p></div><button class="df-refresh" id="bm-refresh" type="button">Refresh</button></div>
+    <form class="cm-form" id="busmap-form" autocomplete="off">
+      <label>Outcome<select id="bm-outcome"><option value="">All outcomes</option>${["DIFFERENT","CACHE_MISSING"].map((o) => `<option value="${o}"${busmap.outcome === o ? " selected" : ""}>${o}</option>`).join("")}</select></label>
+      <label>Action<select id="bm-action"><option value="">All actions</option>${busmapOptions(recs.map((r) => r.actionType), busmap.action)}</select></label>
+      <label>Operator<select id="bm-operator"><option value="">All operators</option>${busmapOptions(recs.map((r) => r.operatorCode), busmap.operator)}</select></label>
+      <label>Repaired<select id="bm-repaired"><option value="">Any</option><option value="true"${busmap.repaired === "true" ? " selected" : ""}>Repaired</option><option value="false"${busmap.repaired === "false" ? " selected" : ""}>Not repaired</option></select></label>
+      <label>Trip code<input id="bm-trip" type="search" placeholder="Search trip code" value="${esc(busmap.trip)}"></label>
+    </form>
+    ${note ? `<p class="note">${esc(note)}</p>` : ""}
+    <div id="busmap-result">${busmapTable()}</div></section>`;
+}
+
+function bindBusmap() {
+  document.getElementById("bm-refresh")?.addEventListener("click", () => loadBusmap());
+  BUSMAP_FIELDS.forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener(key === "trip" ? "input" : "change", (event) => { busmap[key] = event.target.value; paintBusmapResult(); });
+  });
+}
+
+function paintBusmapResult() {
+  const target = document.getElementById("busmap-result");
+  if (target) target.innerHTML = busmapTable();
+}
+
+function paintBusmap() {
+  const target = document.querySelector(".cm-viewer");
+  if (target && route() === "busmap-analytics") { target.outerHTML = busmapPage(); bindBusmap(); }
+}
+
+async function loadBusmap() {
+  busmapController?.abort();
+  const activeController = new AbortController();
+  busmapController = activeController;
+  busmap.state = "loading";
+  busmap.message = "";
+  paintBusmap();
+  try {
+    const result = await adminPortalService.busmapAnalytics({ signal: activeController.signal });
+    if (busmapController !== activeController) return;
+    busmap.records = Array.isArray(result) ? result : (result.records || result.data || []);
+    busmap.state = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || busmapController !== activeController) return;
+    busmap.state = "error";
+    busmap.message = error.message || "Unable to load busmap analytics.";
+  } finally {
+    if (busmapController === activeController) { busmapController = undefined; paintBusmap(); }
+  }
+}
+
+function reportsPage() {
+  // Every report opens as an in-SPA section so the sidebar always stays visible.
+  const cards = [
+    ["Top Routes", "Rank the most-booked from/to routes by count over a trip-date range.", "/orbitplus/admin/top-routes", "Open report →"],
+    ["Queue Metrics", "Inspect recent Queue Metrics lifecycle records and refine them with filters.", "/orbitplus/admin/queue-metrics", "Open report →"],
+    ["Queue Analytics", "Status distribution, completion performance, action breakdown, and failures.", "/orbitplus/admin/queue-analytics", "Open analytics →"],
+    ["Busmap Data Analytics", "Cache-versus-Bits differences recorded when a live read found the cache stale.", "/orbitplus/admin/busmap-analytics", "Open analytics →"],
+  ];
+  return `<section class="rep-grid">${cards.map(([title, desc, url, action]) =>
+    `<a class="rep-card" href="${url}"><strong>${esc(title)}</strong><span>${esc(desc)}</span><b>${esc(action)}</b></a>`).join("")}</section>`;
+}
+
 function page(current) {
   if (current === "dashboard") return dashboard();
   if (current === "queues") return queuesPage();
@@ -662,11 +1228,17 @@ function page(current) {
   if (current === "tripdetails") return `<section class="panel"><div class="p-head"><h2>TripDetails Freshness</h2></div>${freshness()}</section>`;
   if (current === "trip-analyzer") return `<section class="panel"><div class="p-head"><h2>Trip Analyzer / Trip History</h2><span class="tag na">bounded scan · queue_metrix</span></div>${tripAnalyzer()}</section>`;
   if (current === "dragonfly") return cacheViewerPage();
+  if (current === "cache-settings") return cacheSettingsPage();
+  if (current === "cache-freshness") return cacheFreshnessPage();
+  if (current === "top-routes") return topRoutesPage();
+  if (current === "queue-metrics") return queueMetricsPage();
+  if (current === "queue-analytics") return queueAnalyticsPage();
+  if (current === "busmap-analytics") return busmapPage();
   if (current === "cassandra") return routeMetadataPage();
   if (current === "operators") return operatorsPage();
   if (current === "memory") return memoryPage();
   if (current === "logs") return logsPage();
-  if (current === "reports") return `<section class="panel"><div class="p-head"><h2>Reports</h2><a href="${ADMIN_ENDPOINTS.reports}">Open Reports</a></div><div class="na-box"><div>Detailed Queue Metrics reporting and filtering remain available in the existing reports area.</div></div></section>`;
+  if (current === "reports") return reportsPage();
   return dashboard();
 }
 
@@ -677,6 +1249,12 @@ function bind() {
   document.getElementById("burger")?.addEventListener("click", () => document.querySelector(".side")?.scrollIntoView({ behavior: "smooth" }));
   bindUserMenu();
   if (route() === "dragonfly") bindCacheViewer();
+  if (route() === "cache-settings") bindCacheSettings();
+  if (route() === "cache-freshness") bindCacheFreshness();
+  if (route() === "top-routes") bindTopRoutes();
+  if (route() === "queue-metrics") bindQueueMetrics();
+  if (route() === "queue-analytics") bindQueueAnalytics();
+  if (route() === "busmap-analytics") bindBusmap();
   if (route() === "cassandra") bindRouteMetadata();
   if (route() === "operators") bindOperators();
   if (route() === "memory") bindMemory();
@@ -694,6 +1272,12 @@ async function load() {
     mount.innerHTML = shell(current, page(current));
     bind();
     if (current === "dragonfly") loadCacheViewer(true);
+    if (current === "cache-settings") loadCacheSettings();
+    if (current === "cache-freshness") loadCacheFreshness();
+    if (current === "top-routes") loadTopRoutes();
+    if (current === "queue-metrics") loadQueueMetrics();
+    if (current === "queue-analytics") loadQueueAnalytics();
+    if (current === "busmap-analytics") loadBusmap();
     if (current === "operators") loadOperators();
     if (current === "memory") loadMemory();
     if (current === "logs") loadLogs(true);

@@ -141,6 +141,46 @@ func (repository *QueueMetrixRepository) List(ctx context.Context, limit int) ([
 	return jobs, nil
 }
 
+// ScanTripDateRange walks queue_metrix with driver paging and collects the
+// lightweight route fields for rows whose trip_date falls in the inclusive
+// [fromDate, toDate] range. queue_metrix is keyed by queue_id only, so the
+// trip-date predicate is applied in Go (ALLOW FILTERING is deliberately
+// avoided). The scan reads at LOCAL_ONE and stops at maxRows examined or the
+// context deadline, reporting whether it was truncated. Only the columns the
+// Top Routes report needs are selected, to keep the scan light.
+func (repository *QueueMetrixRepository) ScanTripDateRange(ctx context.Context, fromDate, toDate string, maxRows, pageSize int) (master.TopRoutesScanResult, error) {
+	if pageSize <= 0 {
+		pageSize = 1000
+	}
+	statement := `SELECT from_station, to_station, trip_date, operator_code, zone, updated_at FROM ` + queueMetrixTable
+	iter := repository.session.Query(statement).WithContext(ctx).Consistency(gocql.LocalOne).PageSize(pageSize).Iter()
+	result := master.TopRoutesScanResult{Records: make([]master.TopRoutesRouteRecord, 0)}
+	for {
+		var record master.TopRoutesRouteRecord
+		if !iter.Scan(&record.FromStation, &record.ToStation, &record.TripDate, &record.OperatorCode, &record.Zone, &record.UpdatedAt) {
+			break
+		}
+		result.RowsExamined++
+		// trip_date is stored as "YYYY-MM-DD", so a lexical comparison matches a
+		// calendar-date range comparison.
+		if record.TripDate >= fromDate && record.TripDate <= toDate {
+			result.Records = append(result.Records, record)
+		}
+		if (maxRows > 0 && result.RowsExamined >= maxRows) || ctx.Err() != nil {
+			result.Truncated = true
+			break
+		}
+	}
+	if err := iter.Close(); err != nil {
+		if ctx.Err() != nil {
+			result.Truncated = true
+			return result, nil
+		}
+		return master.TopRoutesScanResult{}, fmt.Errorf("scan queue metrix trip date range: %w", err)
+	}
+	return result, nil
+}
+
 // ScanTripHistory walks queue_metrix with driver paging and applies the trip or
 // route match in Go. queue_metrix is keyed by queue_id only, so no
 // server-side predicate exists for this lookup; ALLOW FILTERING is deliberately

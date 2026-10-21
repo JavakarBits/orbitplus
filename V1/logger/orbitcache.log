@@ -1,4 +1,0 @@
-ERROR: 2021/10/05 18:13:09 bitscommunicator.go:30: json: cannot unmarshal number 2.50 into Go struct field Tax.data.schedule.tax.cgstValue of type int
-ERROR: 2021/10/05 18:13:09 bitscommunicator.go:30: json: cannot unmarshal string into Go struct field BitsSearchResultResponse.data of type []models.BitsSearchResult
-ERROR: 2021/10/05 18:13:09 bitscommunicator.go:30: json: cannot unmarshal string into Go struct field BitsSearchResultResponse.data of type []models.BitsSearchResult
-ERROR: 2021/10/05 18:13:09 bitscommunicator.go:30: json: cannot unmarshal string into Go struct field BitsSearchResultResponse.data of type []models.BitsSearchResult

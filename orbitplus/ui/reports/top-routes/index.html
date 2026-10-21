@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Top Routes | OrbitPlus Admin</title><link rel="stylesheet" href="/orbitplus/styles.css"></head>
+<body>
+<header class="portal-header"><a class="brand" href="/orbitplus/">OrbitPlus <span>Admin</span></a><nav class="portal-nav" aria-label="Primary navigation"><a href="/orbitplus/">Dashboard</a><details class="reports-menu"><summary>Operations</summary><div class="reports-menu-list"><a href="/orbitplus/master">Operations overview</a><a href="/orbitplus/cache">Cache viewer</a><a href="/orbitplus/cache-freshness">Cache freshness</a><a href="/orbitplus/rabbitmq">RabbitMQ</a><a href="/orbitplus/cql">CQL query</a><a href="/orbitplus/tables/route-metadata">Route lookup</a><a href="/orbitplus/tables/schedule-metadata">Schedule lookup</a><a href="/orbitplus/tables">Metadata tables</a></div></details><details class="reports-menu active"><summary>Reports</summary><div class="reports-menu-list"><a href="/orbitplus/reports/queue-jobs">Queue Metrics</a><a href="/orbitplus/reports/queue-analytics">Queue Analytics</a><a class="active" href="/orbitplus/reports/top-routes">Top Routes</a></div></details></nav><form action="/orbitplus/logout" method="post"><button class="header-button" type="submit">Log out</button></form></header>
+<main class="portal-shell">
+<section class="page-intro"><div><p class="eyebrow">REPORTS / TOP ROUTES</p><h1>Top Routes</h1><p>Most-requested from-station to to-station pairs, ranked by count within a trip-date range.</p></div><a class="secondary-button" href="/orbitplus/reports/queue-jobs">View Queue Metrics</a></section>
+<section class="report-filter-panel" aria-label="Top Routes filters">
+  <div class="filter-panel-heading"><div><p class="eyebrow">FILTERS</p><h2>Refine Top Routes</h2></div><button class="text-button" id="reset-filters" type="button">Reset filters</button></div>
+  <div class="report-filters">
+    <label>From trip date<input id="from" type="date"></label>
+    <label>To trip date<input id="to" type="date"></label>
+    <label>Top N<input id="limit" type="number" min="1" value="100"></label>
+    <label>Operator<input id="operator-filter" type="search" placeholder="Filter by operator"></label>
+    <label>Zone<input id="zone-filter" type="search" placeholder="Filter by zone"></label>
+    <label>&nbsp;<button class="secondary-button" id="run" type="button">Run report</button></label>
+  </div>
+</section>
+<p class="scope-note" id="scope">Loading Top Routes…</p>
+<section class="report-table" aria-label="Top Routes report"><div class="table-scroll"><table><thead><tr><th>#</th><th>From</th><th>To</th><th>Trip Date</th><th>Count</th><th>Operators</th><th>Zones</th><th>Last Updated</th></tr></thead><tbody id="top-routes-body"></tbody></table></div></section>
+</main>
+<script>
+const reportBody = document.getElementById("top-routes-body"), scope = document.getElementById("scope");
+const fromInput = document.getElementById("from"), toInput = document.getElementById("to"), limitInput = document.getElementById("limit");
+const operatorFilter = document.getElementById("operator-filter"), zoneFilter = document.getElementById("zone-filter"), run = document.getElementById("run");
+let routes = [];
+
+(function initDates() {
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const today = new Date(), plus7 = new Date(); plus7.setDate(today.getDate() + 7);
+  fromInput.value = iso(today); toInput.value = iso(plus7);
+})();
+
+const cell = (row, value, className) => { const el = document.createElement("td"); if (className) el.className = className; el.textContent = (value === undefined || value === null || value === "") ? "\u2014" : value; row.append(el); };
+const formatTime = (value) => value ? new Date(value).toLocaleString() : "\u2014";
+function showEmpty(title, message) { reportBody.replaceChildren(); const row = document.createElement("tr"), el = document.createElement("td"), heading = document.createElement("strong"), detail = document.createElement("span"); el.colSpan = 8; el.className = "empty-state"; heading.textContent = title; detail.textContent = message; el.append(heading, detail); row.append(el); reportBody.append(row); }
+
+function matchingRoutes() {
+  const op = operatorFilter.value.trim().toLowerCase(), zone = zoneFilter.value.trim().toLowerCase();
+  return routes.filter((r) =>
+    (!op || (r.operators || []).some((o) => o.toLowerCase().includes(op))) &&
+    (!zone || (r.zones || []).some((z) => z.toLowerCase().includes(zone))));
+}
+
+function renderRoutes() {
+  const visible = matchingRoutes();
+  if (!visible.length) { showEmpty("No routes found", "No loaded routes match the selected filters."); return; }
+  reportBody.replaceChildren();
+  visible.forEach((r, index) => {
+    const row = document.createElement("tr");
+    cell(row, String(index + 1));
+    cell(row, r.fromStation);
+    cell(row, r.toStation);
+    cell(row, r.tripDate);
+    cell(row, String(r.count), "status-cell");
+    cell(row, (r.operators || []).join(", ") + (r.operatorCount ? " (" + r.operatorCount + ")" : ""));
+    cell(row, (r.zones || []).join(", "));
+    cell(row, formatTime(r.lastUpdatedAt));
+    reportBody.append(row);
+  });
+}
+
+function load() {
+  const from = fromInput.value, to = toInput.value, limit = limitInput.value || "100";
+  if (!from || !to) { scope.textContent = "Pick both a from and to trip date."; return; }
+  scope.textContent = "Running Top Routes report…"; run.disabled = true;
+  fetch("/orbitplus/api/reports/top-routes?from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to) + "&limit=" + encodeURIComponent(limit), { credentials: "same-origin" })
+    .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
+    .then(({ ok, payload }) => {
+      if (!ok) { routes = []; showEmpty("Unable to load Top Routes", payload.message || "Report failed."); scope.textContent = payload.message || "Report failed."; return; }
+      const d = payload.data; routes = d.routes || [];
+      let note = "Filters apply to the loaded routes for trip dates " + d.fromDate + " to " + d.toDate + " (maximum " + routes.length + "). Examined " + d.rowsExamined + " records";
+      if (d.truncated) note += " (scan capped \u2014 results may be partial)";
+      note += ".";
+      scope.textContent = note;
+      renderRoutes();
+    })
+    .catch(() => { routes = []; showEmpty("Unable to load Top Routes", "Refresh after the service is connected to Cassandra."); scope.textContent = "Top Routes report is unavailable."; })
+    .finally(() => { run.disabled = false; });
+}
+
+[operatorFilter, zoneFilter].forEach((el) => el.addEventListener("input", renderRoutes));
+document.getElementById("reset-filters").addEventListener("click", () => { operatorFilter.value = ""; zoneFilter.value = ""; renderRoutes(); });
+run.addEventListener("click", load);
+load();
+</script>
+</body>
+</html>
