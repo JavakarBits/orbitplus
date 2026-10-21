@@ -13,40 +13,108 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"orbitplusworker/internal/application/worker"
 	"orbitplusworker/internal/infrastructure/bits"
+	"orbitplusworker/internal/infrastructure/credentialcache"
 	"orbitplusworker/internal/infrastructure/dragonfly"
-	"orbitplusworker/internal/infrastructure/orbit"
+	"orbitplusworker/internal/infrastructure/mastercred"
 	"orbitplusworker/internal/infrastructure/orbitplus"
 	"orbitplusworker/internal/infrastructure/rabbitmq"
 )
 
 // setupFileLogging makes both the standard logger and the slog default logger
-// write to a dated file inside logDir in addition to stderr, so the admin Logs
-// page (served by the Master) can display the Worker's logs. The Worker uses
-// log for startup/shutdown and log/slog for per-message processing, so both
-// must be redirected. A failure here is non-fatal: logging keeps going to
-// stderr as before.
-func setupFileLogging(logDir string) (func(), error) {
+// write to a dated, per-worker file inside logDir in addition to stderr, so the
+// admin Logs page (served by the Master) can display the Worker's logs. The
+// Worker uses log for startup/shutdown and log/slog for per-message processing,
+// so both must be redirected. Every log line is also tagged with the worker
+// label so interleaved stderr (e.g. docker compose logs) is attributable. A
+// failure here is non-fatal: logging keeps going to stderr as before.
+func setupFileLogging(logDir, workerLabel string) (func(), error) {
 	if logDir == "" {
 		return nil, fmt.Errorf("log directory is empty")
 	}
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log directory %q: %w", logDir, err)
 	}
-	name := filepath.Join(logDir, "orbitplusworker-"+time.Now().UTC().Format("2006-01-02")+".log")
+	pruneOldLogFiles(logDir, logRetention)
+	name := filepath.Join(logDir, "orbitplusworker-"+workerLabel+"-"+time.Now().UTC().Format("2006-01-02")+".log")
 	file, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %q: %w", name, err)
 	}
 	writer := io.MultiWriter(os.Stderr, file)
 	log.SetOutput(writer)
-	slog.SetDefault(slog.New(slog.NewTextHandler(writer, nil)))
+	log.SetPrefix("[" + workerLabel + "] ")
+	slog.SetDefault(slog.New(slog.NewTextHandler(writer, nil)).With("worker", workerLabel))
 	return func() { _ = file.Close() }, nil
+}
+
+// logRetention is how long dated worker log files are kept. Files older than
+// this window are pruned when logging is set up, so the orbit/Bits call logs
+// never grow without bound.
+const logRetention = 7 * 24 * time.Hour
+
+// pruneOldLogFiles deletes ".log" files in logDir whose modification time is
+// older than maxAge. It is best-effort: any error is logged and skipped so
+// logging setup is never blocked by cleanup.
+func pruneOldLogFiles(logDir string, maxAge time.Duration) {
+	if logDir == "" {
+		return
+	}
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		log.Printf("log retention skipped: read log directory %q: %v", logDir, err)
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			path := filepath.Join(logDir, entry.Name())
+			if err := os.Remove(path); err != nil {
+				log.Printf("log retention: remove %q failed: %v", path, err)
+				continue
+			}
+			log.Printf("log retention: removed log older than %s: %s", maxAge, entry.Name())
+		}
+	}
+}
+
+// workerLabelFromQueue derives a short, filesystem-safe worker label from the
+// consumed queue name. Each worker consumes a unique queue
+// (e.g. tripdetails.refresh.bits), so the trailing segment ("bits", "r2bits",
+// "r3bits", "default") uniquely identifies the worker. Any character outside
+// [a-z0-9_-] is replaced so the label is always a safe filename component.
+func workerLabelFromQueue(queue string) string {
+	label := queue
+	if index := strings.LastIndex(label, "."); index >= 0 && index < len(label)-1 {
+		label = label[index+1:]
+	}
+	label = strings.ToLower(strings.TrimSpace(label))
+	cleaned := make([]rune, 0, len(label))
+	for _, character := range label {
+		switch {
+		case character >= 'a' && character <= 'z', character >= '0' && character <= '9', character == '-', character == '_':
+			cleaned = append(cleaned, character)
+		default:
+			cleaned = append(cleaned, '-')
+		}
+	}
+	if len(cleaned) == 0 {
+		return "worker"
+	}
+	return string(cleaned)
 }
 
 type authenticatedTransport struct {
@@ -142,12 +210,13 @@ func main() {
 	}
 	log.Printf("tripdetails refresh worker configuration loaded: APP_ENV=%s", config.AppEnvironment)
 
-	closeLogFile, err := setupFileLogging(config.LogDir)
+	workerLabel := workerLabelFromQueue(config.RabbitMQ.Queue)
+	closeLogFile, err := setupFileLogging(config.LogDir, workerLabel)
 	if err != nil {
 		log.Printf("file logging disabled: %v", err)
 	} else {
 		defer closeLogFile()
-		log.Printf("file logging enabled: writing to %s", config.LogDir)
+		log.Printf("file logging enabled for worker %q: writing to %s", workerLabel, config.LogDir)
 	}
 
 	rateLimiter, closeRateLimiter, err := newZoneRateLimiter(config)
@@ -215,18 +284,29 @@ func main() {
 	}
 	log.Print("Bits client setup complete")
 
-	log.Print("beginning Orbit credential client setup")
-	orbitHTTP, err := newHTTPClient(config.Orbit.TLS, config.HTTPTimeout, worker.HTTPAuthConfig{})
+	log.Print("beginning Master credential client setup")
+	// The worker no longer calls Orbit. It fetches operator BITS credentials
+	// from the Master's internal endpoint, authenticated with the shared
+	// internal token (attached by the HTTP client's transport), and caches them
+	// locally in BoltDB.
+	masterCredHTTP, err := newHTTPClient(config.OrbitPlus.TLS, config.HTTPTimeout, worker.HTTPAuthConfig{BearerToken: config.MasterInternalToken})
 	if err != nil {
-		log.Printf("invalid Orbit TLS configuration: %v", err)
+		log.Printf("invalid Master credential TLS configuration: %v", err)
 		return
 	}
-	credentialClient, err := orbit.NewClient(config.Orbit.Endpoint, config.Orbit.NamespaceCode, config.Orbit.AccessToken, config.OrbitPlusResponseSize, orbitHTTP, config.AppEnvironment)
+	masterCredentialClient, err := mastercred.NewClient(config.OrbitPlus.Endpoint, config.OrbitPlusResponseSize, masterCredHTTP, config.AppEnvironment)
 	if err != nil {
-		log.Printf("invalid Orbit credential client configuration: %v", err)
+		log.Printf("invalid Master credential client configuration: %v", err)
 		return
 	}
-	log.Print("Orbit credential client setup complete")
+	credentialCache, err := credentialcache.Open(config.CredentialCache.Path, config.CredentialCache.TTL, masterCredentialClient)
+	if err != nil {
+		log.Printf("cannot open credential cache: %v", err)
+		return
+	}
+	defer func() { _ = credentialCache.Close() }()
+	credentialClient := credentialCache
+	log.Printf("Master credential client setup complete: cache=%s ttl=%s", config.CredentialCache.Path, config.CredentialCache.TTL)
 
 	log.Print("beginning OrbitPlus client setup")
 	orbitPlusHTTP, err := newHTTPClient(config.OrbitPlus.TLS, config.HTTPTimeout, config.OrbitPlus.Auth)

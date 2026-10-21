@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -18,13 +19,25 @@ const (
 
 // UIAccessAuth protects the OrbitPlus UI with an environment-configured token.
 type UIAccessAuth struct {
-	accessToken   []byte
+	accessToken []byte
+	// signingKey keys the session HMAC. It combines the configured access token
+	// with a random secret generated once per process start, so every Master
+	// restart invalidates all previously issued session cookies and forces the
+	// user to re-enter the access token.
+	signingKey    []byte
 	secureCookies bool
 }
 
-// NewUIAccessAuth constructs the UI access-token gate.
+// NewUIAccessAuth constructs the UI access-token gate. A fresh random boot
+// secret is folded into the session signing key, so sessions do not survive a
+// Master restart.
 func NewUIAccessAuth(accessToken string, secureCookies bool) *UIAccessAuth {
-	return &UIAccessAuth{accessToken: []byte(accessToken), secureCookies: secureCookies}
+	bootSecret := make([]byte, 32)
+	// On the vanishingly unlikely read failure, signingKey falls back to the
+	// access token alone; sessions still work, they just survive a restart.
+	_, _ = rand.Read(bootSecret)
+	signingKey := append([]byte(accessToken), bootSecret...)
+	return &UIAccessAuth{accessToken: []byte(accessToken), signingKey: signingKey, secureCookies: secureCookies}
 }
 
 func (auth *UIAccessAuth) enabled() bool {
@@ -130,7 +143,7 @@ func (auth *UIAccessAuth) sessionCookie(expiresAt time.Time) *http.Cookie {
 
 func (auth *UIAccessAuth) sessionValue(expiresAt time.Time) string {
 	expires := strconv.FormatInt(expiresAt.Unix(), 10)
-	mac := hmac.New(sha256.New, auth.accessToken)
+	mac := hmac.New(sha256.New, auth.signingKey)
 	_, _ = mac.Write([]byte(expires))
 	return expires + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
@@ -148,7 +161,7 @@ func (auth *UIAccessAuth) validSession(value string) bool {
 	if err != nil {
 		return false
 	}
-	mac := hmac.New(sha256.New, auth.accessToken)
+	mac := hmac.New(sha256.New, auth.signingKey)
 	_, _ = mac.Write([]byte(expires))
 	return hmac.Equal(providedSignature, mac.Sum(nil))
 }

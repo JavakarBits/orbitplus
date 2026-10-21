@@ -1,4 +1,4 @@
-export const ADMIN_ENDPOINTS = Object.freeze({ dashboard: "/orbitplus/api/admin/dashboard", tripHistory: "/orbitplus/api/admin/trip-history", operators: "/orbitplus/api/admin/operators", cache: "/orbitplus/cache", cacheKeys: "/orbitplus/api/cache", cacheValue: "/orbitplus/api/cache/value", logs: "/orbitplus/api/admin/logs", logContent: "/orbitplus/api/admin/logs/content", systemHealth: "/orbitplus/api/dashboard/system-health", reports: "/orbitplus/reports", rabbitmq: "/orbitplus/rabbitmq", routeMetadata: "/orbitplus/api/tables/route-metadata" });
+export const ADMIN_ENDPOINTS = Object.freeze({ dashboard: "/orbitplus/api/admin/dashboard", tripHistory: "/orbitplus/api/admin/trip-history", operators: "/orbitplus/api/admin/operators", cache: "/orbitplus/cache", cacheKeys: "/orbitplus/api/cache", cacheValue: "/orbitplus/api/cache/value", logs: "/orbitplus/api/admin/logs", logContent: "/orbitplus/api/admin/logs/content", systemHealth: "/orbitplus/api/dashboard/system-health", reports: "/orbitplus/reports", rabbitmq: "/orbitplus/rabbitmq", routeMetadata: "/orbitplus/api/tables/route-metadata", cacheSettings: "/orbitplus/api/admin/cache-settings", cacheFreshness: "/orbitplus/api/admin/cache-freshness", cacheFreshnessEntries: "/orbitplus/api/admin/cache-freshness/entries", topRoutes: "/orbitplus/api/reports/top-routes", queueMetricsReport: "/orbitplus/api/reports/queue-jobs", queueSummary: "/orbitplus/api/dashboard/queue-summary", busmapAnalytics: "/orbitplus/api/reports/busmap-analytics" });
 
 async function readAPI(fetcher, endpoint, signal) {
   const response = await fetcher(endpoint, { credentials: "same-origin", signal });
@@ -33,6 +33,17 @@ export class AdminPortalService {
     const query = new URLSearchParams({ operator: operator || "", travel: travel || "", from: from || "", to: to || "" });
     return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.routeMetadata}?${query}`, signal);
   }
+  cacheSettings({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.cacheSettings, signal); }
+  saveCacheSettings(settings) { return writeAPI(this.fetcher, ADMIN_ENDPOINTS.cacheSettings, "POST", settings); }
+  cacheFreshness({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.cacheFreshness, signal); }
+  cacheFreshnessEntries({ tier, signal } = {}) { return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.cacheFreshnessEntries}?tier=${encodeURIComponent(tier || "")}`, signal); }
+  topRoutes({ from, to, limit, signal } = {}) {
+    const query = new URLSearchParams({ from: from || "", to: to || "", limit: String(limit || 100) });
+    return readAPI(this.fetcher, `${ADMIN_ENDPOINTS.topRoutes}?${query}`, signal);
+  }
+  queueMetrics({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.queueMetricsReport, signal); }
+  queueSummary({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.queueSummary, signal); }
+  busmapAnalytics({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.busmapAnalytics, signal); }
   operators({ signal } = {}) { return readAPI(this.fetcher, ADMIN_ENDPOINTS.operators, signal); }
   createOperator(operatorCode, zoneCode) { return writeAPI(this.fetcher, ADMIN_ENDPOINTS.operators, "POST", { operatorCode, zoneCode }); }
   setOperatorActive(operatorCode, active) { return writeAPI(this.fetcher, `${ADMIN_ENDPOINTS.operators}/${encodeURIComponent(operatorCode)}`, "PATCH", { active }); }

@@ -75,11 +75,14 @@ func classifyFreshness(updatedAt, now time.Time) FreshnessTier {
 	if updatedAt.IsZero() {
 		return TierCold
 	}
+	// Thresholds are runtime-editable via the admin Cache settings page; read
+	// the live snapshot (seeded from the env defaults at startup).
+	settings := activeCacheSettings()
 	age := now.Sub(updatedAt)
 	switch {
-	case age <= hotMaxAge:
+	case age <= settings.HotMaxAge:
 		return TierHot
-	case age <= warmMaxAge:
+	case age <= settings.WarmMaxAge:
 		return TierWarm
 	default:
 		return TierCold

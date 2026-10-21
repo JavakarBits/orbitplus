@@ -129,9 +129,11 @@ type RabbitMQConfig struct {
 	Password   string        `json:"-"`
 }
 
+// BitsConfig holds BITS client settings. The BITS host itself is resolved per
+// operator from the Master credential's zoneUrl, so no static base URL is kept
+// here; only transport (TLS) settings remain.
 type BitsConfig struct {
-	BaseURL string        `json:"baseUrl"`
-	TLS     TLSFileConfig `json:"tls"`
+	TLS TLSFileConfig `json:"tls"`
 }
 
 type OrbitPlusConfig struct {
@@ -140,13 +142,12 @@ type OrbitPlusConfig struct {
 	Auth     HTTPAuthConfig `json:"-"`
 }
 
-// OrbitConfig locates the OrbitService operator credential API. AccessToken is
-// Worker-level secret material and is never sourced from a RabbitMQ message.
-type OrbitConfig struct {
-	Endpoint      string        `json:"endpoint"`
-	NamespaceCode string        `json:"namespaceCode"`
-	TLS           TLSFileConfig `json:"tls"`
-	AccessToken   string        `json:"-"`
+// CredentialCacheConfig configures the local BoltDB credential cache. The
+// worker fetches operator BITS credentials from the Master (not Orbit) and
+// caches them here; entries are reused until TTL elapses.
+type CredentialCacheConfig struct {
+	Path string        `json:"path"`
+	TTL  time.Duration `json:"ttl"`
 }
 
 // CacheConfig contains the Dragonfly (Redis-compatible) connection settings used
@@ -165,12 +166,16 @@ type RuntimeConfig struct {
 	AppEnvironment        AppEnvironment  `json:"-"`
 	RabbitMQ              RabbitMQConfig  `json:"rabbitmq"`
 	Bits                  BitsConfig      `json:"bits"`
-	Orbit                 OrbitConfig     `json:"orbit"`
 	OrbitPlus             OrbitPlusConfig `json:"orbitPlus"`
 	Worker                WorkerConfig    `json:"worker"`
 	HealthAPI             HealthAPIConfig `json:"healthApi"`
 	HTTPTimeout           time.Duration   `json:"httpTimeout"`
 	OrbitPlusResponseSize int64           `json:"orbitPlusResponseSize"`
+	// CredentialCache configures the local BoltDB credential cache.
+	CredentialCache CredentialCacheConfig `json:"credentialCache"`
+	// MasterInternalToken is the shared bearer token presented to the Master's
+	// internal credential endpoint. Secret: never logged.
+	MasterInternalToken string `json:"-"`
 	// LogDir is the directory where the Worker writes its application log file
 	// in addition to stderr. Defaults to "logs". The Master's admin Logs page
 	// reads this directory to display Worker logs alongside its own.
@@ -194,15 +199,23 @@ func DefaultRuntimeConfig() RuntimeConfig {
 		},
 		HealthAPI:   HealthAPIConfig{Host: "0.0.0.0", Port: 8080},
 		HTTPTimeout: 15 * time.Second, OrbitPlusResponseSize: 64 << 10,
-		LogDir:      "logs",
+		LogDir:          "logs",
+		CredentialCache: CredentialCacheConfig{Path: "data/credentials.db", TTL: 10 * time.Minute},
 	}
 }
 
 // LoadRuntimeConfig reads optional non-secret JSON settings then environment
 // overrides. Values ending in _FILE are read from deployment-managed files.
 func LoadRuntimeConfig() (RuntimeConfig, error) {
-	if err := loadDotEnv(".env"); err != nil {
-		return RuntimeConfig{}, fmt.Errorf("load .env: %w", err)
+	// WORKER_ENV_FILE lets each per-zone worker instance load its own env file
+	// (e.g. .env.bits). It defaults to .env for the single-instance case. Real
+	// process environment variables still take precedence over the file.
+	envFile := os.Getenv("WORKER_ENV_FILE")
+	if strings.TrimSpace(envFile) == "" {
+		envFile = ".env"
+	}
+	if err := loadDotEnv(envFile); err != nil {
+		return RuntimeConfig{}, fmt.Errorf("load %s: %w", envFile, err)
 	}
 	config := DefaultRuntimeConfig()
 	if configFilePath := os.Getenv("TRIPDETAILS_REFRESH_WORKER_CONFIG_FILE"); configFilePath != "" {
@@ -240,14 +253,30 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 	setString("RABBITMQ_QUEUE", &config.RabbitMQ.Queue)
 	setString("RABBITMQ_EXCHANGE", &config.RabbitMQ.Exchange)
 	setString("RABBITMQ_ROUTING_KEY", &config.RabbitMQ.RoutingKey)
-	setString("BITS_BASE_URL", &config.Bits.BaseURL)
-	setString("ORBIT_URL", &config.Orbit.Endpoint)
-	setString("ORBIT_NAMESPACE_CODE", &config.Orbit.NamespaceCode)
+	// Fallback for a native `go run` against the docker-compose-style .env, which
+	// stores per-worker values under BITS_*/R2BITS_*/... names that compose maps
+	// onto RABBITMQ_QUEUE etc. per container. Only when RABBITMQ_QUEUE was NOT set
+	// directly (i.e. a native run, not Docker) do we default to the BITS worker's
+	// values, so a single `go run` still starts cleanly. In Docker, compose sets
+	// RABBITMQ_QUEUE per worker, so this fallback never overrides it.
+	if config.RabbitMQ.Queue == "" {
+		setString("BITS_QUEUE", &config.RabbitMQ.Queue)
+	}
+	if config.RabbitMQ.RoutingKey == "" {
+		setString("BITS_ROUTING_KEY", &config.RabbitMQ.RoutingKey)
+	}
 	setString("ORBITPLUS_URL", &config.OrbitPlus.Endpoint)
+	setString("CREDENTIAL_CACHE_PATH", &config.CredentialCache.Path)
 	setString("LOG_DIR", &config.LogDir)
 	setString("HEALTH_API_HOST", &config.HealthAPI.Host)
 	if err := setTCPPort(lookup, "HEALTH_API_PORT", &config.HealthAPI.Port); err != nil {
 		return err
+	}
+	// Native-run fallback for the health port (see queue fallback above).
+	if config.HealthAPI.Port == 0 {
+		if err := setTCPPort(lookup, "BITS_HEALTH_PORT", &config.HealthAPI.Port); err != nil {
+			return err
+		}
 	}
 	if err := loadSecret(lookup, "RABBITMQ_USERNAME", "RABBITMQ_USERNAME_FILE", &config.RabbitMQ.Username); err != nil {
 		return err
@@ -265,7 +294,7 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 	if err := loadSecret(lookup, "ORBITPLUS_BEARER_TOKEN", "ORBITPLUS_BEARER_TOKEN_FILE", &config.OrbitPlus.Auth.BearerToken); err != nil {
 		return err
 	}
-	if err := loadSecret(lookup, "ORBIT_ACCESS_TOKEN", "ORBIT_ACCESS_TOKEN_FILE", &config.Orbit.AccessToken); err != nil {
+	if err := loadSecret(lookup, "MASTER_INTERNAL_API_TOKEN", "MASTER_INTERNAL_API_TOKEN_FILE", &config.MasterInternalToken); err != nil {
 		return err
 	}
 	if err := setPositiveInt(lookup, "WORKER_CONCURRENCY", &config.Worker.WorkerConcurrency); err != nil {
@@ -281,6 +310,9 @@ func (config *RuntimeConfig) applyEnvironment(lookup func(string) (string, bool)
 		return err
 	}
 	if err := setPositiveDuration(lookup, "WORKER_HTTP_TIMEOUT", &config.HTTPTimeout); err != nil {
+		return err
+	}
+	if err := setPositiveDuration(lookup, "CREDENTIAL_CACHE_TTL", &config.CredentialCache.TTL); err != nil {
 		return err
 	}
 	if err := config.applyRateLimit(lookup); err != nil {
@@ -520,11 +552,11 @@ func (config RuntimeConfig) Validate() error {
 	if err := ValidateOrbitPlusURL(config.OrbitPlus.Endpoint, config.AppEnvironment); err != nil {
 		return err
 	}
-	if err := ValidateOrbitURL(config.Orbit.Endpoint, config.AppEnvironment); err != nil {
-		return err
+	if strings.TrimSpace(config.MasterInternalToken) == "" {
+		return fmt.Errorf("MASTER_INTERNAL_API_TOKEN is required for the Master credential endpoint")
 	}
-	if strings.TrimSpace(config.Orbit.NamespaceCode) == "" || strings.TrimSpace(config.Orbit.AccessToken) == "" {
-		return fmt.Errorf("ORBIT_NAMESPACE_CODE and ORBIT_ACCESS_TOKEN are required")
+	if strings.TrimSpace(config.CredentialCache.Path) == "" || config.CredentialCache.TTL <= 0 {
+		return fmt.Errorf("CREDENTIAL_CACHE_PATH and a positive CREDENTIAL_CACHE_TTL are required")
 	}
 	if config.HTTPTimeout <= 0 || config.OrbitPlusResponseSize <= 0 {
 		return fmt.Errorf("worker limits must be valid")
@@ -547,11 +579,6 @@ func ValidateBitsURL(raw string, environment AppEnvironment) error {
 // ValidateOrbitPlusURL permits https in every environment and http only in development.
 func ValidateOrbitPlusURL(raw string, environment AppEnvironment) error {
 	return validateEndpointURL(raw, environment, "OrbitPlus endpoint", "https", "http", false, false)
-}
-
-// ValidateOrbitURL permits https in every environment and http only in development.
-func ValidateOrbitURL(raw string, environment AppEnvironment) error {
-	return validateEndpointURL(raw, environment, "Orbit endpoint", "https", "http", true, true)
 }
 
 func validateEndpointURL(raw string, environment AppEnvironment, endpointName, secureScheme, insecureScheme string, requireHostname, rejectQueryAndFragment bool) error {

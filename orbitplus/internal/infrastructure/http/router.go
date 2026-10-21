@@ -13,8 +13,8 @@ import (
 // freshnessVerifier may be nil, which leaves the cached read path untouched and
 // makes a Cache_Flag value of 0 report the live feature as unconfigured rather
 // than silently serving the cached copy as though it were live.
-func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, busmapAnalyticsService *master.BusmapAnalyticsService, logsService *master.LogsReadService, uiAccessAuth *UIAccessAuth, freshnessVerifier *master.CacheFreshnessVerifier, searchLogger *log.Logger, busmapLogger *log.Logger, inventoryLogger *log.Logger) http.Handler {
-	readHandler := NewTripDetailsReadHandler(readService, freshnessVerifier, searchLogger, busmapLogger)
+func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsService, orionmaxInventoryChangeService *master.OrionmaxInventoryEventService, readService *master.TripDetailsReadService, cacheService *master.CacheReadService, rabbitMQManagement rabbitmq.ManagementReader, queueJobsService *master.QueueJobsService, tripFreshnessService *master.TripFreshnessService, tripHistoryService *master.TripHistoryService, tablesService *master.TablesService, operatorRegistry master.OperatorRegistry, busmapAnalyticsService *master.BusmapAnalyticsService, logsService *master.LogsReadService, cqlQueryService *master.CqlQueryService, cacheFreshnessService *master.CacheFreshnessCountService, topRoutesService *master.TopRoutesService, cacheSettingsService *master.CacheSettingsService, uiAccessAuth *UIAccessAuth, internalAuth *InternalTokenAuth, operatorCredentialReader OperatorCredentialReader, freshnessVerifier *master.CacheFreshnessVerifier, searchLogger *log.Logger, busmapLogger *log.Logger, inventoryLogger *log.Logger) http.Handler {
+	readHandler := NewTripDetailsReadHandler(readService, freshnessVerifier, operatorCredentialReader, searchLogger, busmapLogger)
 	queueJobsHandler := NewQueueJobsReportHandler(queueJobsService)
 	queueDashboardHandler := NewQueueDashboardHandler(queueJobsService)
 	systemHealthHandler := NewSystemHealthHandler(startedAt)
@@ -26,6 +26,11 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	operatorsHandler := NewOperatorsHandler(operatorRegistry)
 	busmapAnalyticsHandler := NewBusmapAnalyticsHandler(busmapAnalyticsService)
 	logsHandler := NewLogsHandler(logsService)
+	cqlQueryHandler := NewCqlQueryHandler(cqlQueryService)
+	cacheFreshnessHandler := NewCacheFreshnessHandler(cacheFreshnessService)
+	topRoutesHandler := NewTopRoutesHandler(topRoutesService)
+	cacheSettingsHandler := NewCacheSettingsHandler(cacheSettingsService)
+	operatorCredentialHandler := NewOperatorCredentialHandler(operatorCredentialReader)
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /{$}", redirectTo("/orbitplus/login"))
@@ -43,6 +48,8 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	mux.Handle("GET /orbitplus/master", redirectTo("/orbitplus/admin"))
 	mux.Handle("GET /orbitplus/reports", uiAccessAuth.RequirePage(serveUIFile("ui/reports/index.html")))
 	mux.Handle("GET /orbitplus/reports/queue-analytics", uiAccessAuth.RequirePage(serveUIFile("ui/reports/queue-analytics/index.html")))
+	mux.Handle("GET /orbitplus/reports/top-routes", uiAccessAuth.RequirePage(serveUIFile("ui/reports/top-routes/index.html")))
+	mux.Handle("GET /orbitplus/reports/top-routes/", redirectTo("/orbitplus/reports/top-routes"))
 	mux.Handle("GET /orbitplus/tables", uiAccessAuth.RequirePage(serveUIFile("ui/tables/index.html")))
 	mux.Handle("GET /orbitplus/tables/", redirectTo("/orbitplus/tables"))
 	mux.Handle("GET /orbitplus/tables/route-metadata", uiAccessAuth.RequirePage(serveUIFile("ui/tables/route-metadata/index.html")))
@@ -55,8 +62,15 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	mux.Handle("GET /orbitplus/cache/", redirectTo("/orbitplus/cache"))
 	mux.Handle("GET /orbitplus/rabbitmq", uiAccessAuth.RequirePage(serveUIFile("ui/rabbitmq/index.html")))
 	mux.Handle("GET /orbitplus/rabbitmq/", redirectTo("/orbitplus/rabbitmq"))
+	mux.Handle("GET /orbitplus/cql", uiAccessAuth.RequirePage(serveUIFile("ui/cql/index.html")))
+	mux.Handle("GET /orbitplus/cql/", redirectTo("/orbitplus/cql"))
+	mux.Handle("GET /orbitplus/cache-freshness", uiAccessAuth.RequirePage(serveUIFile("ui/cache-freshness/index.html")))
+	mux.Handle("GET /orbitplus/cache-freshness/", redirectTo("/orbitplus/cache-freshness"))
+	mux.Handle("GET /orbitplus/cache-settings", uiAccessAuth.RequirePage(serveUIFile("ui/cache-settings/index.html")))
+	mux.Handle("GET /orbitplus/cache-settings/", redirectTo("/orbitplus/cache-settings"))
 	mux.Handle("GET /orbitplus/styles.css", uiAccessAuth.RequireEnabled(serveUIFile("ui/styles.css")))
 	mux.Handle("GET /orbitplus/api/reports/queue-jobs", uiAccessAuth.RequireAPI(queueJobsHandler))
+	mux.Handle("GET /orbitplus/api/reports/top-routes", uiAccessAuth.RequireAPI(topRoutesHandler))
 	mux.Handle("GET /orbitplus/api/reports/busmap-analytics", uiAccessAuth.RequireAPI(busmapAnalyticsHandler))
 	mux.Handle("GET /orbitplus/api/dashboard/queue-summary", uiAccessAuth.RequireAPI(queueDashboardHandler))
 	mux.Handle("GET /orbitplus/api/dashboard/system-health", uiAccessAuth.RequireAPI(systemHealthHandler))
@@ -64,6 +78,11 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	mux.Handle("GET /orbitplus/api/admin/trip-history", uiAccessAuth.RequireAPI(tripHistoryHandler))
 	mux.Handle("GET /orbitplus/api/admin/logs", uiAccessAuth.RequireAPI(logsHandler))
 	mux.Handle("GET /orbitplus/api/admin/logs/content", uiAccessAuth.RequireAPI(http.HandlerFunc(logsHandler.ServeContent)))
+	mux.Handle("POST /orbitplus/api/admin/cql", uiAccessAuth.RequireAPI(cqlQueryHandler))
+	mux.Handle("GET /orbitplus/api/admin/cache-freshness", uiAccessAuth.RequireAPI(cacheFreshnessHandler))
+	mux.Handle("GET /orbitplus/api/admin/cache-freshness/entries", uiAccessAuth.RequireAPI(http.HandlerFunc(cacheFreshnessHandler.ServeEntries)))
+	mux.Handle("GET /orbitplus/api/admin/cache-settings", uiAccessAuth.RequireAPI(cacheSettingsHandler))
+	mux.Handle("POST /orbitplus/api/admin/cache-settings", uiAccessAuth.RequireAPI(cacheSettingsHandler))
 	mux.Handle("GET /orbitplus/api/admin/operators", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeList)))
 	mux.Handle("POST /orbitplus/api/admin/operators", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeCreate)))
 	mux.Handle("PATCH /orbitplus/api/admin/operators/{operatorCode}", uiAccessAuth.RequireAPI(http.HandlerFunc(operatorsHandler.ServeStatus)))
@@ -76,6 +95,10 @@ func NewRouter(startedAt time.Time, tripDetailsService *master.TripDetailsServic
 	mux.Handle("POST /api/tripdetails", NewTripDetailsHandler(tripDetailsService))
 	mux.Handle("POST /orbitplus/api/tripdetails/dlq", NewTripDetailsDLQHandler(tripDetailsService))
 	mux.Handle("POST /api/orionmax/inventory/events", NewOrionmaxInventoryChangeHandler(orionmaxInventoryChangeService, inventoryLogger))
+	// Internal service-to-service endpoint: workers fetch an operator's BITS
+	// credential here instead of calling Orbit. Protected by a shared bearer
+	// token, not the UI session cookie.
+	mux.Handle("GET /orbitplus/api/internal/operators/{operatorCode}/credential", internalAuth.Require(http.HandlerFunc(operatorCredentialHandler.Serve)))
 	mux.Handle("GET /health", NewHealthHandler(master.Version))
 	mux.Handle("GET /orbitplus/api/3.0/json/{operatorCode}/{username}/{apiToken}/search/{fromCode}/{toCode}/{tripDate}", http.HandlerFunc(readHandler.ServeSearch))
 	mux.Handle("GET /orbitplus/api/3.0/json/{operatorCode}/{username}/{apiToken}/busmap/{tripCode}/{fromStationCode}/{toStationCode}/{travelDate}", http.HandlerFunc(readHandler.ServeBusMap))

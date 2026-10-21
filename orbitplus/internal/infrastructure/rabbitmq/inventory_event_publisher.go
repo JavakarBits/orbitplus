@@ -3,6 +3,7 @@ package rabbitmq
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,17 +66,28 @@ func (publisher *InventoryEventPublisher) ensureChannel() error {
 	return publisher.connect()
 }
 
-// PublishInventoryEvent publishes an Orionmax event at its fixed highest priority.
+// PublishInventoryEvent publishes an Orionmax event at its fixed highest priority
+// to the default routing key.
 func (publisher *InventoryEventPublisher) PublishInventoryEvent(ctx context.Context, referenceID string, payload []byte) error {
 	return publisher.PublishInventoryEventWithPriority(ctx, referenceID, payload, 10)
 }
 
-// PublishInventoryEventWithPriority publishes a Worker job with the supplied AMQP priority.
+// PublishInventoryEventWithPriority publishes a Worker job with the supplied AMQP
+// priority to the default routing key.
 func (publisher *InventoryEventPublisher) PublishInventoryEventWithPriority(ctx context.Context, referenceID string, payload []byte, priority uint8) error {
-	return publisher.publish(ctx, referenceID, payload, priority)
+	return publisher.publish(ctx, referenceID, payload, priority, master.InventoryRefreshRoutingKey())
 }
 
-func (publisher *InventoryEventPublisher) publish(ctx context.Context, referenceID string, payload []byte, priority uint8) error {
+// PublishInventoryEventWithPriorityAndRoutingKey publishes a Worker job with the
+// supplied AMQP priority to a specific routing key, selecting the per-zone queue.
+func (publisher *InventoryEventPublisher) PublishInventoryEventWithPriorityAndRoutingKey(ctx context.Context, referenceID string, payload []byte, priority uint8, routingKey string) error {
+	if strings.TrimSpace(routingKey) == "" {
+		routingKey = master.InventoryRefreshRoutingKey()
+	}
+	return publisher.publish(ctx, referenceID, payload, priority, routingKey)
+}
+
+func (publisher *InventoryEventPublisher) publish(ctx context.Context, referenceID string, payload []byte, priority uint8, routingKey string) error {
 	publisher.mutex.Lock()
 	defer publisher.mutex.Unlock()
 
@@ -98,7 +110,7 @@ func (publisher *InventoryEventPublisher) publish(ctx context.Context, reference
 			lastErr = err
 			continue
 		}
-		if err := publisher.channel.PublishWithContext(ctx, publisher.exchange, master.InventoryRefreshRoutingKey, false, false, message); err != nil {
+		if err := publisher.channel.PublishWithContext(ctx, publisher.exchange, routingKey, false, false, message); err != nil {
 			lastErr = fmt.Errorf("publish inventory event: %w", err)
 			// Force a reconnect on the next attempt.
 			if publisher.channel != nil {
