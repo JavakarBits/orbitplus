@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CQL Query | OrbitPlus Admin</title><link rel="stylesheet" href="/orbitplus/styles.css"></head>
+<body>
+<header class="portal-header"><a class="brand" href="/orbitplus/">OrbitPlus <span>Admin</span></a><nav class="portal-nav" aria-label="Primary navigation"><a href="/orbitplus/">Dashboard</a><details class="reports-menu active"><summary>Operations</summary><div class="reports-menu-list"><a href="/orbitplus/master">Operations overview</a><a href="/orbitplus/cache">Cache viewer</a><a href="/orbitplus/cache-freshness">Cache freshness</a><a href="/orbitplus/rabbitmq">RabbitMQ</a><a class="active" href="/orbitplus/cql">CQL query</a><a href="/orbitplus/tables/route-metadata">Route lookup</a><a href="/orbitplus/tables/schedule-metadata">Schedule lookup</a><a href="/orbitplus/tables">Metadata tables</a></div></details><details class="reports-menu"><summary>Reports</summary><div class="reports-menu-list"><a href="/orbitplus/reports/queue-jobs">Queue Metrics</a><a href="/orbitplus/reports/queue-analytics">Queue Analytics</a><a href="/orbitplus/reports/top-routes">Top Routes</a></div></details></nav><form action="/orbitplus/logout" method="post"><button class="header-button" type="submit">Log out</button></form></header>
+<main class="portal-shell">
+<section class="page-intro"><div><p class="eyebrow">MASTER / CQL</p><h1>CQL query</h1><p>Run a read-only <strong>SELECT</strong> against the keyspace. Writes and schema changes are rejected. Results are capped at 1000 rows.</p></div></section>
+<section class="cql-panel">
+  <textarea id="cql" class="cql-input" rows="4" spellcheck="false" placeholder="SELECT * FROM queue_metrix LIMIT 50"></textarea>
+  <div class="cql-actions"><button class="secondary-button" id="run" type="button">Run query</button><span class="scope-note" id="status"></span></div>
+</section>
+<section class="report-table"><div class="table-scroll"><table><thead><tr id="head"></tr></thead><tbody id="body"></tbody></table></div></section>
+</main>
+<script>
+const cql = document.getElementById("cql"), run = document.getElementById("run"), status = document.getElementById("status"), head = document.getElementById("head"), body = document.getElementById("body");
+function render(columns, rows) {
+  head.replaceChildren(); body.replaceChildren();
+  columns.forEach((name) => { const th = document.createElement("th"); th.textContent = name; head.append(th); });
+  if (!rows.length) { const tr = document.createElement("tr"), td = document.createElement("td"); td.colSpan = columns.length || 1; td.className = "empty-state"; td.textContent = "No rows returned."; tr.append(td); body.append(tr); return; }
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    columns.forEach((name) => {
+      const td = document.createElement("td");
+      const value = row[name];
+      if (value === null || value === undefined) td.textContent = "\u2014";
+      else if (typeof value === "object") td.textContent = JSON.stringify(value);
+      else td.textContent = String(value);
+      tr.append(td);
+    });
+    body.append(tr);
+  });
+}
+function execute() {
+  const query = cql.value.trim();
+  if (!query) { status.textContent = "Enter a SELECT query."; return; }
+  status.textContent = "Running…"; run.disabled = true;
+  fetch("/orbitplus/api/admin/cql", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query }) })
+    .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
+    .then(({ ok, payload }) => {
+      if (!ok) { status.textContent = payload.message || "Query failed."; render([], []); return; }
+      const data = payload.data;
+      render(data.columns || [], data.rows || []);
+      status.textContent = data.rowCount + " row(s)" + (data.truncated ? " (capped at " + data.maxRows + ")" : "");
+    })
+    .catch(() => { status.textContent = "Request failed."; })
+    .finally(() => { run.disabled = false; });
+}
+run.addEventListener("click", execute);
+cql.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") execute(); });
+</script>
+</body>
+</html>

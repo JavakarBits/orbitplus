@@ -91,15 +91,43 @@ func (service *TripDetailsReadService) refreshIfCold(ctx context.Context, action
 	if service.now != nil {
 		now = service.now
 	}
-	tier := classifyFreshness(newestUpdatedAt(candidates), now().UTC())
+	current := now().UTC()
+	tier := classifyFreshness(newestUpdatedAt(candidates), current)
+	// Outside the configured IST cache window ("non-cache hours") a read must go
+	// live to BITS even if the cached entry is Hot/Warm. Inside the window (or
+	// when the window is disabled) normal age-based freshness applies.
+	settings := activeCacheSettings()
+	cacheHours := settings.CacheHoursActive(current)
 	if service.logger != nil {
-		service.logger.Printf("TripDetails %s freshness tier=%s operator=%q from=%q to=%q date=%q",
-			strings.ToLower(action), tier, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
+		service.logger.Printf("TripDetails %s freshness tier=%s cacheHours=%t operator=%q from=%q to=%q date=%q",
+			strings.ToLower(action), tier, cacheHours, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 	}
-	if tier != TierCold {
+	if cacheHours && tier != TierCold {
 		return false
 	}
 	return service.refresher.RefreshCold(ctx, action, lookup, RefreshCredential{Username: lookup.Username, APIToken: lookup.APIToken})
+}
+
+// refreshBusMapAlways fetches the busmap live from BITS regardless of the cache
+// freshness tier, so a busmap read always reflects the current BITS state even
+// when the cached trip is Hot. It returns true when the cache was refreshed, so
+// the caller re-reads the now-fresh metadata. A nil refresher is a no-op; a
+// refresh failure returns false so the caller serves the existing cache rather
+// than failing the read.
+func (service *TripDetailsReadService) refreshBusMapAlways(ctx context.Context, lookup RouteLookup, candidates []domain.TripDetailsStageMetadata) bool {
+	if service.refresher == nil {
+		return false
+	}
+	if service.logger != nil {
+		now := time.Now
+		if service.now != nil {
+			now = service.now
+		}
+		tier := classifyFreshness(newestUpdatedAt(candidates), now().UTC())
+		service.logger.Printf("TripDetails busmap always-live refresh tier=%s operator=%q trip=%q from=%q to=%q date=%q",
+			tier, lookup.OperatorCode, lookup.TripCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
+	}
+	return service.refresher.RefreshCold(ctx, BitsActionBusMap, lookup, RefreshCredential{Username: lookup.Username, APIToken: lookup.APIToken})
 }
 
 func ValidLiveSearchLookup(lookup RouteLookup, username, apiToken string) bool {
@@ -225,10 +253,13 @@ func (service *TripDetailsReadService) BusMap(ctx context.Context, lookup RouteL
 		service.logNotFound("busmap", "metadata_empty")
 		return nil, ErrTripDetailsNotFound
 	}
-	// Age-based freshness: a Cold trip (older than warmMaxAge) is refreshed from
-	// BITS before serving. On a successful refresh, re-read and re-filter the
-	// now-fresh metadata so busmap resolution uses the repaired rows.
-	if service.refreshIfCold(ctx, BitsActionBusMap, lookup, candidates) {
+	// BusMap always fetches live from BITS, regardless of cache freshness tier
+	// (Hot/Warm/Cold) — a busmap read must reflect the current BITS state, so
+	// even a Hot cached trip is refreshed before serving. On a successful
+	// refresh, re-read and re-filter the now-fresh metadata so busmap resolution
+	// uses the repaired rows. If the refresh fails (BITS down or rate-limited),
+	// the existing cached candidates are served rather than failing the read.
+	if service.refreshBusMapAlways(ctx, lookup, candidates) {
 		refreshed, err := service.metadata.FindStagesByRoute(ctx, lookup.OperatorCode, lookup.FromCode, lookup.ToCode, lookup.TripDate)
 		if err == nil {
 			if filtered := filterStagesByTripCode(refreshed, lookup.TripCode); len(filtered) > 0 {

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cache Settings | OrbitPlus Admin</title>
+<link rel="stylesheet" href="/orbitplus/styles.css">
+<style>
+  /* Page-scoped styles (cs- prefix) so nothing else in the portal is affected. */
+  .cs-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: -8px 0 22px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 1px 2px rgba(16, 24, 40, .03); color: var(--muted); font-size: .86rem; }
+  .cs-pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; font-size: .75rem; font-weight: 700; letter-spacing: .01em; }
+  .cs-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .cs-pill-on { background: #e7f6ec; color: #1a7f45; }
+  .cs-pill-off { background: #eef1f6; color: #5b6676; }
+  .cs-status-sep { width: 1px; height: 16px; background: var(--line); }
+  .cs-status-updated { margin-left: auto; font-size: .8rem; }
+
+  .cs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; }
+  .cs-card { display: flex; flex-direction: column; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 1px 2px rgba(16, 24, 40, .03); }
+  .cs-card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+  .cs-card-num { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px; background: var(--blue-soft); color: var(--blue); font-size: .85rem; font-weight: 800; }
+  .cs-card h2 { margin: 0; color: var(--navy); font-size: 1.08rem; }
+  .cs-card-sub { margin: 2px 0 18px 42px; color: var(--muted); font-size: .84rem; line-height: 1.5; }
+
+  .cs-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .cs-fields.cs-fields-3 { grid-template-columns: 1.1fr 1fr 1fr; }
+  .cs-field { display: grid; gap: 7px; }
+  .cs-field label { color: var(--ink); font-size: .78rem; font-weight: 700; }
+  .cs-field input, .cs-field select { min-width: 0; padding: 11px 12px; border: 1px solid #cfd5df; border-radius: 9px; background: var(--surface); color: var(--ink); font: inherit; font-size: .9rem; transition: border-color .12s, box-shadow .12s; }
+  .cs-field input:focus, .cs-field select:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+  .cs-field-hint { color: var(--muted); font-size: .74rem; line-height: 1.4; }
+  .cs-field input:disabled { background: #f1f3f7; color: var(--muted); cursor: not-allowed; }
+  .cs-field.cs-disabled label, .cs-field.cs-disabled .cs-field-hint { opacity: .5; }
+
+  .cs-note { margin-top: auto; padding-top: 16px; color: var(--muted); font-size: .8rem; line-height: 1.55; }
+
+  .cs-savebar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--canvas); }
+  .cs-save { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 150px; padding: 12px 20px; border: 0; border-radius: 9px; background: var(--blue); color: #fff; font: inherit; font-size: .9rem; font-weight: 700; cursor: pointer; transition: background .12s, opacity .12s; }
+  .cs-save:hover { background: #2a56bd; }
+  .cs-save:disabled { opacity: .6; cursor: default; }
+  .cs-save-msg { font-size: .85rem; font-weight: 600; }
+  .cs-save-msg.cs-ok { color: #1a7f45; }
+  .cs-save-msg.cs-err { color: #c23934; }
+
+  @media (max-width: 860px) {
+    .cs-grid { grid-template-columns: 1fr; }
+    .cs-fields, .cs-fields.cs-fields-3 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header class="portal-header"><a class="brand" href="/orbitplus/">OrbitPlus <span>Admin</span></a><nav class="portal-nav" aria-label="Primary navigation"><a href="/orbitplus/">Dashboard</a><details class="reports-menu active"><summary>Operations</summary><div class="reports-menu-list"><a href="/orbitplus/master">Operations overview</a><a href="/orbitplus/cache">Cache viewer</a><a href="/orbitplus/cache-freshness">Cache freshness</a><a class="active" href="/orbitplus/cache-settings">Cache settings</a><a href="/orbitplus/rabbitmq">RabbitMQ</a><a href="/orbitplus/cql">CQL query</a><a href="/orbitplus/tables/route-metadata">Route lookup</a><a href="/orbitplus/tables/schedule-metadata">Schedule lookup</a><a href="/orbitplus/tables">Metadata tables</a></div></details><details class="reports-menu"><summary>Reports</summary><div class="reports-menu-list"><a href="/orbitplus/reports/queue-jobs">Queue Metrics</a><a href="/orbitplus/reports/queue-analytics">Queue Analytics</a><a href="/orbitplus/reports/top-routes">Top Routes</a></div></details></nav><form action="/orbitplus/logout" method="post"><button class="header-button" type="submit">Log out</button></form></header>
+
+<main class="portal-shell">
+<section class="page-intro"><div><p class="eyebrow">MASTER / CACHE</p><h1>Cache settings</h1><p>Tune the Hot/Warm freshness thresholds and the daily cache window at runtime. Changes are saved in the Master (not .env) and applied immediately. Window times are Indian Standard Time (IST).</p></div></section>
+
+<div class="cs-status" id="status">
+  <span id="status-text">Loading cache settings…</span>
+</div>
+
+<div class="cs-grid">
+  <section class="cs-card" aria-label="Freshness thresholds">
+    <div class="cs-card-head"><span class="cs-card-num">1</span><h2>Freshness thresholds</h2></div>
+    <p class="cs-card-sub">Freshness age = now − last update. Within Hot → serve Hot; within Warm → serve Warm; older → Cold (refresh from BITS).</p>
+    <div class="cs-fields">
+      <div class="cs-field">
+        <label for="hot">Hot max age (hours)</label>
+        <input id="hot" type="number" min="0.1" step="0.1" value="4">
+        <span class="cs-field-hint">Freshest tier served straight from cache.</span>
+      </div>
+      <div class="cs-field">
+        <label for="warm">Warm max age (hours)</label>
+        <input id="warm" type="number" min="0.1" step="0.1" value="6">
+        <span class="cs-field-hint">Still cache-served. Must be ≥ Hot.</span>
+      </div>
+    </div>
+    <p class="cs-note">Anything older than Warm is Cold and triggers a live refresh from BITS on read.</p>
+  </section>
+
+  <section class="cs-card" aria-label="Cache window">
+    <div class="cs-card-head"><span class="cs-card-num">2</span><h2>Cache window (IST)</h2></div>
+    <p class="cs-card-sub">Controls when the cache is used. <strong>Off</strong> = cache is always on (24/7). <strong>On</strong> = cache is on only during the hours below; outside them the cache is bypassed and every read goes live to BITS.</p>
+    <div class="cs-fields cs-fields-3">
+      <div class="cs-field">
+        <label for="windowEnabled">Cache window</label>
+        <select id="windowEnabled"><option value="false">Off — cache always on</option><option value="true">On — cache only in these hours</option></select>
+        <span class="cs-field-hint">Off = cache 24/7. On = live outside the hours.</span>
+      </div>
+      <div class="cs-field">
+        <label for="windowStart">Cache start (IST)</label>
+        <input id="windowStart" type="time" value="06:00">
+        <span class="cs-field-hint">Start of cache hours.</span>
+      </div>
+      <div class="cs-field">
+        <label for="windowEnd">Cache end (IST)</label>
+        <input id="windowEnd" type="time" value="22:00">
+        <span class="cs-field-hint">End of cache hours.</span>
+      </div>
+    </div>
+    <p class="cs-note">A start later than the end wraps past midnight — e.g. 22:00–06:00 caches overnight.</p>
+  </section>
+</div>
+
+<div class="cs-savebar">
+  <button class="cs-save" id="save" type="button">Save settings</button>
+  <span class="cs-save-msg" id="save-status"></span>
+</div>
+</main>
+
+<script>
+const statusText = document.getElementById("status-text");
+const statusBar = document.getElementById("status");
+const saveStatus = document.getElementById("save-status");
+const saveButton = document.getElementById("save");
+const hot = document.getElementById("hot"), warm = document.getElementById("warm");
+const windowEnabled = document.getElementById("windowEnabled");
+const windowStart = document.getElementById("windowStart"), windowEnd = document.getElementById("windowEnd");
+
+function reflectWindowState() {
+  const on = windowEnabled.value === "true";
+  [windowStart, windowEnd].forEach((input) => {
+    input.disabled = !on;
+    input.closest(".cs-field").classList.toggle("cs-disabled", !on);
+  });
+}
+
+function renderStatus(d) {
+  statusBar.replaceChildren();
+  const thresholds = document.createElement("span");
+  thresholds.textContent = "Hot \u2264 " + d.hotMaxAgeHours + "h \u00b7 Warm \u2264 " + d.warmMaxAgeHours + "h";
+  const sep = document.createElement("span"); sep.className = "cs-status-sep";
+  const pill = document.createElement("span");
+  if (d.windowEnabled) { pill.className = "cs-pill cs-pill-on"; pill.textContent = "Window " + d.windowStart + "\u2013" + d.windowEnd + " IST"; }
+  else { pill.className = "cs-pill cs-pill-off"; pill.textContent = "Window off \u00b7 cache all day"; }
+  statusBar.append(thresholds, sep, pill);
+  if (d.updatedAt) {
+    const updated = document.createElement("span");
+    updated.className = "cs-status-updated";
+    updated.textContent = "Last saved " + new Date(d.updatedAt).toLocaleString();
+    statusBar.append(updated);
+  }
+}
+
+function apply(d) {
+  hot.value = d.hotMaxAgeHours; warm.value = d.warmMaxAgeHours;
+  windowEnabled.value = d.windowEnabled ? "true" : "false";
+  windowStart.value = d.windowStart || "06:00"; windowEnd.value = d.windowEnd || "22:00";
+  reflectWindowState();
+  renderStatus(d);
+}
+
+function statusMessage(text) { statusBar.replaceChildren(); const s = document.createElement("span"); s.id = "status-text"; s.textContent = text; statusBar.append(s); }
+
+function load() {
+  statusMessage("Loading cache settings…");
+  fetch("/orbitplus/api/admin/cache-settings", { credentials: "same-origin" })
+    .then((r) => r.json().then((payload) => ({ ok: r.ok, payload })))
+    .then(({ ok, payload }) => { if (!ok) { statusMessage(payload.message || "Unable to load cache settings."); return; } apply(payload.data); })
+    .catch(() => { statusMessage("Cache settings are unavailable. Check Cassandra connectivity."); });
+}
+
+function save() {
+  saveStatus.className = "cs-save-msg"; saveStatus.textContent = "Saving…"; saveButton.disabled = true;
+  const body = {
+    hotMaxAgeHours: parseFloat(hot.value),
+    warmMaxAgeHours: parseFloat(warm.value),
+    windowEnabled: windowEnabled.value === "true",
+    windowStart: windowStart.value || "00:00",
+    windowEnd: windowEnd.value || "00:00"
+  };
+  fetch("/orbitplus/api/admin/cache-settings", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    .then((r) => r.json().then((payload) => ({ ok: r.ok, payload })))
+    .then(({ ok, payload }) => {
+      if (!ok) { saveStatus.className = "cs-save-msg cs-err"; saveStatus.textContent = payload.message || "Save failed."; return; }
+      apply(payload.data); saveStatus.className = "cs-save-msg cs-ok"; saveStatus.textContent = "Saved \u2713 Applied immediately.";
+    })
+    .catch(() => { saveStatus.className = "cs-save-msg cs-err"; saveStatus.textContent = "Request failed."; })
+    .finally(() => { saveButton.disabled = false; });
+}
+
+saveButton.addEventListener("click", save);
+windowEnabled.addEventListener("change", reflectWindowState);
+load();
+</script>
+</body>
+</html>

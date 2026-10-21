@@ -20,9 +20,12 @@ import (
 
 const periodicRouteRefreshActivityType = "periodic-route-refresh"
 
-// PriorityInventoryEventPublisher publishes one Worker job with an explicit AMQP priority.
+// PriorityInventoryEventPublisher publishes one Worker job with an explicit AMQP
+// priority. The routing-key variant selects the per-zone queue the job is routed
+// to, so a stale zone's refresh lands on that zone's dedicated queue.
 type PriorityInventoryEventPublisher interface {
 	PublishInventoryEventWithPriority(context.Context, string, []byte, uint8) error
+	PublishInventoryEventWithPriorityAndRoutingKey(context.Context, string, []byte, uint8, string) error
 }
 
 // StaleRouteMetadataReader reads route metadata that has not been updated recently.
@@ -109,6 +112,7 @@ func (service *OrbitRouteRefreshService) Run(ctx context.Context) error {
 	}
 	active := make(map[string]struct{}, len(activeOperators))
 	zoneURLs := make(map[string]string, len(activeOperators))
+	zoneCodes := make(map[string]string, len(activeOperators))
 	for _, operator := range activeOperators {
 		if !operator.Active() {
 			continue
@@ -120,6 +124,7 @@ func (service *OrbitRouteRefreshService) Run(ctx context.Context) error {
 		}
 		active[operator.Code] = struct{}{}
 		zoneURLs[operator.Code] = zoneURL
+		zoneCodes[operator.Code] = operator.ZoneCode
 		service.logger.Printf("Orbit periodic route refresh selected operator: operator_code=%q zone_code=%q", operator.Code, operator.ZoneCode)
 	}
 	service.logger.Printf("Orbit periodic route refresh active operators loaded: count=%d", len(active))
@@ -161,7 +166,7 @@ func (service *OrbitRouteRefreshService) Run(ctx context.Context) error {
 			} else {
 				normalRouteCount++
 			}
-			queued, err := service.publishRoute(ctx, route, zoneURLs[operatorCode], priority)
+			queued, err := service.publishRoute(ctx, route, zoneURLs[operatorCode], zoneCodes[operatorCode], priority)
 			if err != nil {
 				service.logger.Printf("Orbit periodic route refresh failed: stage=publish_route operator_code=%q trip_date=%q from_code=%q to_code=%q priority=%d error=%v", route.operatorCode, route.tripDate, route.fromStation, route.toStation, priority, err)
 				return err
@@ -257,7 +262,7 @@ func orbitRoutePriority(route orbitRouteDefinition, toStation string) (uint8, bo
 	return 0, false
 }
 
-func (service *OrbitRouteRefreshService) publishRoute(ctx context.Context, route routeRefreshPair, zoneURL string, priority uint8) (bool, error) {
+func (service *OrbitRouteRefreshService) publishRoute(ctx context.Context, route routeRefreshPair, zoneURL, zoneCode string, priority uint8) (bool, error) {
 	referenceID := periodicRouteReferenceID(route)
 	existing, found, err := service.metrics.FindByReferenceID(ctx, referenceID)
 	if err != nil {
@@ -282,7 +287,8 @@ func (service *OrbitRouteRefreshService) publishRoute(ctx context.Context, route
 	if err := service.metrix.SaveReceived(ctx, metric); err != nil {
 		return false, fmt.Errorf("save periodic queue metric: %w", err)
 	}
-	if err := service.publisher.PublishInventoryEventWithPriority(ctx, referenceID, payload, priority); err != nil {
+	routingKey := RoutingKeyForZone(zoneCode)
+	if err := service.publisher.PublishInventoryEventWithPriorityAndRoutingKey(ctx, referenceID, payload, priority, routingKey); err != nil {
 		service.markDead(ctx, metric, err)
 		return false, fmt.Errorf("publish periodic Worker job: %w", err)
 	}

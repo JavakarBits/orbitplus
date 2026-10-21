@@ -1,12 +1,14 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"orbitplusmaster/internal/application/master"
@@ -18,21 +20,47 @@ type TripDetailsReadHandler struct {
 	// verifier is nil when live verification is unconfigured, in which case a
 	// Cache_Flag value of 0 reports the feature as unavailable rather than
 	// silently serving the cached copy.
-	verifier     *master.CacheFreshnessVerifier
-	searchLogger *log.Logger
-	busmapLogger *log.Logger
+	verifier *master.CacheFreshnessVerifier
+	// credentialReader resolves the operator's stored BITS zone URL so a live
+	// read targets the same host the operator was registered with, rather than
+	// a hardcoded zone table. It is optional; when nil the handler falls back to
+	// the zone-code table.
+	credentialReader OperatorCredentialReader
+	searchLogger     *log.Logger
+	busmapLogger     *log.Logger
 }
 
 // NewTripDetailsReadHandler constructs a read handler with dedicated loggers
 // for Search and BusMap calls that write to separate log files.
-func NewTripDetailsReadHandler(service *master.TripDetailsReadService, verifier *master.CacheFreshnessVerifier, searchLogger *log.Logger, busmapLogger *log.Logger) *TripDetailsReadHandler {
+func NewTripDetailsReadHandler(service *master.TripDetailsReadService, verifier *master.CacheFreshnessVerifier, credentialReader OperatorCredentialReader, searchLogger *log.Logger, busmapLogger *log.Logger) *TripDetailsReadHandler {
 	if searchLogger == nil {
 		searchLogger = log.Default()
 	}
 	if busmapLogger == nil {
 		busmapLogger = log.Default()
 	}
-	return &TripDetailsReadHandler{service: service, verifier: verifier, searchLogger: searchLogger, busmapLogger: busmapLogger}
+	return &TripDetailsReadHandler{service: service, verifier: verifier, credentialReader: credentialReader, searchLogger: searchLogger, busmapLogger: busmapLogger}
+}
+
+// resolveLiveBaseURL returns the BITS base URL for a live read. It prefers the
+// operator's stored zone URL (resolved operator-wise from Orbit and persisted),
+// so nothing is hardcoded per deployment. It falls back to the zone-code table
+// only when no stored URL is available, preserving the previous behaviour.
+func (handler *TripDetailsReadHandler) resolveLiveBaseURL(ctx context.Context, operatorCode, zoneCode string, callLogger *log.Logger) (string, bool) {
+	if handler.credentialReader != nil {
+		credential, found, err := handler.credentialReader.FindOperatorCredential(ctx, operatorCode)
+		switch {
+		case err != nil:
+			callLogger.Printf("live read: operator zone URL lookup failed; falling back to zone table operator=%q error=%v",
+				operatorCode, err)
+		case found && strings.TrimSpace(credential.ZoneURL) != "":
+			return strings.TrimRight(strings.TrimSpace(credential.ZoneURL), "/"), true
+		default:
+			callLogger.Printf("live read: no stored zone URL for operator; falling back to zone table operator=%q",
+				operatorCode)
+		}
+	}
+	return master.ZoneBitsBaseURL(zoneCode)
 }
 
 func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter, request *http.Request) {
@@ -57,7 +85,7 @@ func (handler *TripDetailsReadHandler) ServeSearch(response http.ResponseWriter,
 	if cacheFlag == cacheFlagFromLive {
 		username := request.PathValue("username")
 		apiToken := request.PathValue("apiToken")
-		baseURL, resolved := master.ZoneBitsBaseURL(zoneCode)
+		baseURL, resolved := handler.resolveLiveBaseURL(request.Context(), lookup.OperatorCode, zoneCode, handler.searchLogger)
 		if zoneErr != nil || !resolved || !master.ValidLiveSearchLookup(lookup, username, apiToken) {
 			// An unknown or absent zone, or missing path credentials, is the
 			// caller's error, not an upstream failure.
@@ -116,7 +144,7 @@ func (handler *TripDetailsReadHandler) ServeBusMap(response http.ResponseWriter,
 	if cacheFlag == cacheFlagFromLive {
 		username := request.PathValue("username")
 		apiToken := request.PathValue("apiToken")
-		baseURL, resolved := master.ZoneBitsBaseURL(zoneCode)
+		baseURL, resolved := handler.resolveLiveBaseURL(request.Context(), lookup.OperatorCode, zoneCode, handler.busmapLogger)
 		if zoneErr != nil || !resolved || !master.ValidLiveBusMapLookup(lookup, username, apiToken) {
 			handler.busmapLogger.Printf("live read rejected: action=BUSMAP operator=%q reason=invalid_live_request",
 				lookup.OperatorCode)

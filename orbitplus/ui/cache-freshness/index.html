@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Cache Freshness | OrbitPlus Admin</title><link rel="stylesheet" href="/orbitplus/styles.css"></head>
+<body>
+<header class="portal-header"><a class="brand" href="/orbitplus/">OrbitPlus <span>Admin</span></a><nav class="portal-nav" aria-label="Primary navigation"><a href="/orbitplus/">Dashboard</a><details class="reports-menu active"><summary>Operations</summary><div class="reports-menu-list"><a href="/orbitplus/master">Operations overview</a><a href="/orbitplus/cache">Cache viewer</a><a class="active" href="/orbitplus/cache-freshness">Cache freshness</a><a href="/orbitplus/rabbitmq">RabbitMQ</a><a href="/orbitplus/cql">CQL query</a><a href="/orbitplus/tables/route-metadata">Route lookup</a><a href="/orbitplus/tables/schedule-metadata">Schedule lookup</a><a href="/orbitplus/tables">Metadata tables</a></div></details><details class="reports-menu"><summary>Reports</summary><div class="reports-menu-list"><a href="/orbitplus/reports/queue-jobs">Queue Metrics</a><a href="/orbitplus/reports/queue-analytics">Queue Analytics</a><a href="/orbitplus/reports/top-routes">Top Routes</a></div></details></nav><form action="/orbitplus/logout" method="post"><button class="header-button" type="submit">Log out</button></form></header>
+<main class="portal-shell">
+<section class="page-intro"><div><p class="eyebrow">MASTER / CACHE</p><h1>Cache freshness</h1><p>How many unique cached trip stages are Hot, Warm, or Cold right now, classified by age of the last update. Click a card to list its trip stages.</p></div><button class="secondary-button" id="refresh" type="button">Refresh</button></section>
+<p class="scope-note" id="scope">Loading cache freshness counts…</p>
+<section class="metric-grid metric-grid-four">
+  <article class="metric-card metric-completed" id="card-hot" data-tier="hot" role="button" tabindex="0"><span>Hot</span><strong id="hot">—</strong><small id="hotNote">Fresh — served from cache</small></article>
+  <article class="metric-card metric-warning" id="card-warm" data-tier="warm" role="button" tabindex="0"><span>Warm</span><strong id="warm">—</strong><small id="warmNote">Aging — served from cache</small></article>
+  <article class="metric-card metric-dead" id="card-cold" data-tier="cold" role="button" tabindex="0"><span>Cold</span><strong id="cold">—</strong><small id="coldNote">Stale — refreshed from BITS</small></article>
+  <article class="metric-card" id="card-total"><span>Total</span><strong id="total">—</strong><small>Unique trip stages</small></article>
+</section>
+<section class="panel" id="detail-panel" hidden>
+  <div class="panel-heading"><div><p class="eyebrow" id="detail-eyebrow">TIER</p><h2 id="detail-title">Trip stages</h2></div><span class="panel-period" id="detail-count"></span></div>
+  <div class="table-scroll"><table><thead><tr><th>Operator</th><th>Trip Code</th><th>Stage</th><th>Trip Date</th><th>From</th><th>To</th><th>Updated</th><th>Age</th></tr></thead><tbody id="detail-body"></tbody></table></div>
+</section>
+</main>
+<script>
+const scope = document.getElementById("scope"), refresh = document.getElementById("refresh");
+const panel = document.getElementById("detail-panel"), detailBody = document.getElementById("detail-body");
+const detailTitle = document.getElementById("detail-title"), detailEyebrow = document.getElementById("detail-eyebrow"), detailCount = document.getElementById("detail-count");
+const set = (id, value) => { document.getElementById(id).textContent = value; };
+
+function ageText(seconds) {
+  if (seconds == null) return "\u2014";
+  if (seconds < 60) return seconds + "s";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
+  return Math.floor(seconds / 86400) + "d " + Math.floor((seconds % 86400) / 3600) + "h";
+}
+const cell = (row, value) => { const el = document.createElement("td"); el.textContent = (value === undefined || value === null || value === "") ? "\u2014" : value; row.append(el); };
+function emptyDetail(message) { detailBody.replaceChildren(); const tr = document.createElement("tr"), td = document.createElement("td"); td.colSpan = 8; td.className = "empty-state"; td.textContent = message; tr.append(td); detailBody.append(tr); }
+
+function loadCounts() {
+  scope.textContent = "Loading cache freshness counts…"; refresh.disabled = true;
+  fetch("/orbitplus/api/admin/cache-freshness", { credentials: "same-origin" })
+    .then((r) => r.json().then((payload) => ({ ok: r.ok, payload })))
+    .then(({ ok, payload }) => {
+      if (!ok) { scope.textContent = payload.message || "Cache freshness is unavailable."; return; }
+      const d = payload.data;
+      set("hot", d.hot); set("warm", d.warm); set("cold", d.cold); set("total", d.total);
+      set("hotNote", "Age \u2264 " + d.hotMaxAge);
+      set("warmNote", d.hotMaxAge + " < age \u2264 " + d.warmMaxAge);
+      set("coldNote", "Age > " + d.warmMaxAge + " — refreshed from BITS");
+      const observed = d.observedAt ? new Date(d.observedAt).toLocaleString() : "now";
+      scope.textContent = "Unique cached trip stages by age, as of " + observed + ". Click Hot, Warm, or Cold to list them.";
+    })
+    .catch(() => { scope.textContent = "Cache freshness is unavailable. Check Cassandra connectivity and refresh."; })
+    .finally(() => { refresh.disabled = false; });
+}
+
+function loadEntries(tier) {
+  panel.hidden = false;
+  detailEyebrow.textContent = tier.toUpperCase();
+  detailTitle.textContent = "Trip stages (" + tier + ")";
+  detailCount.textContent = "Loading…";
+  detailBody.replaceChildren();
+  fetch("/orbitplus/api/admin/cache-freshness/entries?tier=" + encodeURIComponent(tier), { credentials: "same-origin" })
+    .then((r) => r.json().then((payload) => ({ ok: r.ok, payload })))
+    .then(({ ok, payload }) => {
+      if (!ok) { detailCount.textContent = ""; emptyDetail(payload.message || "Unavailable"); return; }
+      const rows = payload.data.entries || [];
+      detailCount.textContent = payload.data.count + (payload.data.count === 1 ? " entry" : " entries");
+      if (!rows.length) { emptyDetail("No trip stages in this tier."); return; }
+      rows.forEach((e) => {
+        const tr = document.createElement("tr");
+        cell(tr, e.operatorCode); cell(tr, e.tripCode); cell(tr, e.tripStageCode); cell(tr, e.tripDate);
+        cell(tr, e.fromStation); cell(tr, e.toStation);
+        cell(tr, e.updatedAt ? new Date(e.updatedAt).toLocaleString() : "");
+        cell(tr, ageText(e.ageSeconds));
+        detailBody.append(tr);
+      });
+    })
+    .catch(() => { detailCount.textContent = ""; emptyDetail("Request failed."); });
+}
+
+document.querySelectorAll("[data-tier]").forEach((card) => {
+  const tier = card.dataset.tier;
+  card.addEventListener("click", () => loadEntries(tier));
+  card.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); loadEntries(tier); } });
+});
+refresh.addEventListener("click", loadCounts);
+loadCounts();
+</script>
+</body>
+</html>

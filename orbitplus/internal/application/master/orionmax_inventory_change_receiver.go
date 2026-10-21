@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -12,13 +13,67 @@ import (
 	"orbitplusmaster/internal/domain"
 )
 
-const InventoryRefreshRoutingKey = "tripdetails.refresh"
+// defaultInventoryRoutingKeyPrefix is the fallback routing-key prefix when
+// RABBITMQ_ROUTING_KEY_PREFIX is unset. Each zone group is routed to its own
+// queue by appending ".<group>" to the prefix (see RoutingKeyForZone).
+const defaultInventoryRoutingKeyPrefix = "tripdetails.refresh"
+
+// defaultZoneGroupName is the fallback group for any zone not listed as a
+// dedicated group. Used when RABBITMQ_DEFAULT_ZONE_GROUP is unset.
+const defaultZoneGroupName = "default"
+
+// InventoryRefreshRoutingKey is the base routing key prefix, read from
+// RABBITMQ_ROUTING_KEY_PREFIX (falling back to the default). It is a function
+// rather than a constant so the prefix is configurable per deployment.
+func InventoryRefreshRoutingKey() string {
+	if prefix := strings.TrimSpace(os.Getenv("RABBITMQ_ROUTING_KEY_PREFIX")); prefix != "" {
+		return strings.TrimRight(prefix, ".")
+	}
+	return defaultInventoryRoutingKeyPrefix
+}
+
+// dedicatedZoneGroups returns the set of zones that each have their own queue and
+// worker, read from RABBITMQ_DEDICATED_ZONES (comma-separated zone codes). A zone
+// not in this set is routed to the default group. An empty/unset value means no
+// dedicated zones, so every zone routes to the default queue.
+func dedicatedZoneGroups() map[string]struct{} {
+	groups := make(map[string]struct{})
+	for _, zone := range strings.Split(os.Getenv("RABBITMQ_DEDICATED_ZONES"), ",") {
+		if normalized := strings.ToLower(strings.TrimSpace(zone)); normalized != "" {
+			groups[normalized] = struct{}{}
+		}
+	}
+	return groups
+}
+
+// defaultZoneGroup returns the catch-all group name, read from
+// RABBITMQ_DEFAULT_ZONE_GROUP (falling back to the default).
+func defaultZoneGroup() string {
+	if group := strings.TrimSpace(os.Getenv("RABBITMQ_DEFAULT_ZONE_GROUP")); group != "" {
+		return strings.ToLower(group)
+	}
+	return defaultZoneGroupName
+}
+
+// RoutingKeyForZone maps a zone code to the routing key of the queue that serves
+// it. A zone listed in RABBITMQ_DEDICATED_ZONES gets its own queue; every other
+// zone shares the default queue. The returned key is "<prefix>.<group>".
+func RoutingKeyForZone(zoneCode string) string {
+	group := defaultZoneGroup()
+	normalized := strings.ToLower(strings.TrimSpace(zoneCode))
+	if _, dedicated := dedicatedZoneGroups()[normalized]; dedicated {
+		group = normalized
+	}
+	return InventoryRefreshRoutingKey() + "." + group
+}
 
 // InventoryEventPublisher publishes one prepared Worker job. The priority
 // variant lets the receiver rank jobs by activity type; higher is served first.
+// The routing-key variant selects the per-zone queue the job is routed to.
 type InventoryEventPublisher interface {
 	PublishInventoryEvent(context.Context, string, []byte) error
 	PublishInventoryEventWithPriority(context.Context, string, []byte, uint8) error
+	PublishInventoryEventWithPriorityAndRoutingKey(context.Context, string, []byte, uint8, string) error
 }
 
 // OrionmaxInventoryEventService receives and converts Orionmax inventory events.
@@ -136,14 +191,15 @@ func (service *OrionmaxInventoryEventService) ReceiveInventoryChange(ctx context
 			return fmt.Errorf("save queue metrix record: %w", err)
 		}
 		priority := priorityForActivityType(activityType)
-		service.logger.Printf("RabbitMQ publish started: reference_id=%q operator_code=%q zone=%q action=%q activity_type=%q priority=%d", job.Metric.ReferenceID, item.OperatorCode, event.Zone, actionType, activityType, priority)
-		if err := service.publisher.PublishInventoryEventWithPriority(ctx, job.Metric.ReferenceID, job.Payload, priority); err != nil {
+		routingKey := RoutingKeyForZone(event.Zone)
+		service.logger.Printf("RabbitMQ publish started: reference_id=%q operator_code=%q zone=%q routing_key=%q action=%q activity_type=%q priority=%d", job.Metric.ReferenceID, item.OperatorCode, event.Zone, routingKey, actionType, activityType, priority)
+		if err := service.publisher.PublishInventoryEventWithPriorityAndRoutingKey(ctx, job.Metric.ReferenceID, job.Payload, priority, routingKey); err != nil {
 			service.logger.Printf("RabbitMQ publish failed: reference_id=%q operator_code=%q error=%v", job.Metric.ReferenceID, item.OperatorCode, err)
 			service.markDead(ctx, job.Metric, err)
 			service.releaseInFlight(key)
 			return err
 		}
-		service.logger.Printf("RabbitMQ publish succeeded: reference_id=%q operator_code=%q zone=%q", job.Metric.ReferenceID, item.OperatorCode, event.Zone)
+		service.logger.Printf("RabbitMQ publish succeeded: reference_id=%q operator_code=%q zone=%q routing_key=%q", job.Metric.ReferenceID, item.OperatorCode, event.Zone, routingKey)
 		now = time.Now().UTC()
 		job.Metric.QueueStatus = domain.QueueStatusQueued
 		job.Metric.QueuedAt = now

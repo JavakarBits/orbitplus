@@ -23,6 +23,14 @@ type RuntimeConfig struct {
 	AppEnvironment     AppEnvironment
 	APIPort            int
 	UIAccessToken      string
+	// InternalAPIToken is the shared bearer token workers present to the
+	// internal credential endpoint. Empty disables the internal endpoints.
+	InternalAPIToken string
+	// OrbitCredential locates the Orbit credential service the Master uses to
+	// resolve operator BITS credentials at registration time. Nil disables
+	// credential resolution (operators still register; credentials just are not
+	// populated).
+	OrbitCredential *OrbitCredentialConfig
 	// LogDir is the directory where the service writes its application log
 	// file in addition to stderr. It defaults to "logs" and is also the
 	// directory the admin Logs page reads from.
@@ -44,8 +52,13 @@ type RuntimeConfig struct {
 }
 
 // DefaultRuntimeConfig returns the configuration used when no environment variables are set.
+//
+// WorkerLogDir defaults to the sibling Worker's log directory (relative to the
+// Master's working directory in the standard native layout) so the admin Logs
+// page shows Worker logs out of the box. Set WORKER_LOG_DIR to override it (for
+// example a shared volume path in Docker).
 func DefaultRuntimeConfig() RuntimeConfig {
-	return RuntimeConfig{AppEnvironment: Development, APIPort: 8082, LogDir: "logs"}
+	return RuntimeConfig{AppEnvironment: Development, APIPort: 8082, LogDir: "logs", WorkerLogDir: "../orbitplusworker/logs"}
 }
 
 // LoadRuntimeConfig reads local .env settings, then runtime configuration.
@@ -65,10 +78,14 @@ func LoadRuntimeConfig() (RuntimeConfig, error) {
 		config.APIPort = port
 	}
 	config.UIAccessToken = os.Getenv("ORBITPLUS_UI_ACCESS_TOKEN")
+	config.InternalAPIToken = strings.TrimSpace(os.Getenv("MASTER_INTERNAL_API_TOKEN"))
+	config.OrbitCredential = loadOrbitCredentialConfig()
 	if value := strings.TrimSpace(os.Getenv("LOG_DIR")); value != "" {
 		config.LogDir = value
 	}
-	config.WorkerLogDir = strings.TrimSpace(os.Getenv("WORKER_LOG_DIR"))
+	if value := strings.TrimSpace(os.Getenv("WORKER_LOG_DIR")); value != "" {
+		config.WorkerLogDir = value
+	}
 
 	storage, err := loadStorageConfig()
 	if err != nil {

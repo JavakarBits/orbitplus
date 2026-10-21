@@ -23,6 +23,14 @@ type operatorZoneFinder interface {
 	FindOperator(ctx context.Context, operatorCode string) (domain.Operator, bool, error)
 }
 
+// operatorCredentialZoneReader reads one operator's stored credential so the
+// cold refresh can use the operator-specific BITS zone URL that was resolved
+// from Orbit, instead of a hardcoded zone-code map. It is optional: when nil,
+// the refresher falls back to the zone-code map.
+type operatorCredentialZoneReader interface {
+	FindOperatorCredential(ctx context.Context, operatorCode string) (domain.OperatorCredential, bool, error)
+}
+
 // RefreshCredential carries the BITS credentials a cold refresh needs. They come
 // from the read request's own path (operatorCode/username/apiToken), so no new
 // credential source is introduced.
@@ -42,9 +50,10 @@ func (credential RefreshCredential) Valid() bool {
 // cannot refresh (no credential, unknown zone, BITS down), the caller keeps
 // serving the stale cache.
 type ColdCacheRefresher struct {
-	verifier  liveVerifier
-	operators operatorZoneFinder
-	logger    *log.Logger
+	verifier    liveVerifier
+	operators   operatorZoneFinder
+	credentials operatorCredentialZoneReader
+	logger      *log.Logger
 }
 
 // NewColdCacheRefresher constructs a cold refresher. A nil verifier or nil
@@ -55,6 +64,17 @@ func NewColdCacheRefresher(verifier liveVerifier, operators operatorZoneFinder, 
 		logger = log.Default()
 	}
 	return &ColdCacheRefresher{verifier: verifier, operators: operators, logger: logger}
+}
+
+// WithCredentialZoneReader supplies the operator credential store so the cold
+// refresh resolves the BITS base URL from the operator's stored zone URL
+// (resolved from Orbit per operator) instead of the hardcoded zone-code map. A
+// nil reader is ignored, leaving the zone-code map as the only source.
+func (refresher *ColdCacheRefresher) WithCredentialZoneReader(reader operatorCredentialZoneReader) *ColdCacheRefresher {
+	if reader != nil {
+		refresher.credentials = reader
+	}
+	return refresher
 }
 
 // RefreshCold fetches the lookup live from BITS and repairs the cache. The
@@ -101,9 +121,26 @@ func (refresher *ColdCacheRefresher) RefreshCold(ctx context.Context, action str
 	return true
 }
 
-// resolveZoneURL turns an operator code into a BITS base URL via its stored zone
-// code. A missing operator or unknown zone disables the refresh for this read.
+// resolveZoneURL turns an operator code into a BITS base URL. It prefers the
+// operator's own stored credential zone URL (resolved from Orbit per operator),
+// so the Master calls the same operator-specific BITS host the worker uses and
+// nothing is hardcoded. Only when no stored zone URL is available does it fall
+// back to the operator's zone code via the zone map. A missing operator or an
+// unresolvable zone disables the refresh for this read.
 func (refresher *ColdCacheRefresher) resolveZoneURL(ctx context.Context, operatorCode string) (string, bool) {
+	// Prefer the operator-specific stored zone URL.
+	if refresher.credentials != nil {
+		credential, found, err := refresher.credentials.FindOperatorCredential(ctx, operatorCode)
+		if err != nil {
+			refresher.logger.Printf("cold cache refresh: stored zone url lookup failed, falling back to zone map: operator=%q error=%v", operatorCode, err)
+		} else if found {
+			if zoneURL := strings.TrimRight(strings.TrimSpace(credential.ZoneURL), "/"); zoneURL != "" {
+				return zoneURL, true
+			}
+		}
+	}
+
+	// Fallback: resolve via the operator's registered zone code.
 	operator, found, err := refresher.operators.FindOperator(ctx, operatorCode)
 	if err != nil {
 		refresher.logger.Printf("cold cache refresh skipped: operator=%q reason=operator_lookup_failed error=%v", operatorCode, err)

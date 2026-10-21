@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -56,22 +57,108 @@ func (client *BitsTripDetailsClient) FetchTripDetails(ctx context.Context, reque
 	}
 	httpRequest.Header.Set("Accept", "application/json")
 
+	slog.Info("Bits HTTP request started",
+		"actionType", string(message.ActionType),
+		"operator", message.OperatorCode,
+		"host", baseURL.Host,
+		"path", redactBitsPath(requestURL, request.Credential),
+	)
+	// WARNING: this logs the FULL BITS request URL, which embeds the operator's
+	// username and apiToken in cleartext. Enabled per explicit request for
+	// debugging. Remove or redact before using in a shared/production
+	// environment, since worker logs are also exposed via the admin Logs UI.
+	slog.Info("Bits HTTP full request",
+		"actionType", string(message.ActionType),
+		"operator", message.OperatorCode,
+		"method", http.MethodGet,
+		"url", requestURL.String(),
+		"username", request.Credential.Username,
+		"apiToken", request.Credential.APIToken,
+	)
 	response, err := client.client.Do(httpRequest)
 	if err != nil {
+		slog.Info("Bits HTTP request completed",
+			"actionType", string(message.ActionType),
+			"operator", message.OperatorCode,
+			"host", baseURL.Host,
+			"success", false,
+			"reason", "transport_error",
+		)
 		return worker.BitsTripDetailsResponse{}, worker.NewRetryableError("Bits request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError {
+		slog.Info("Bits HTTP request completed",
+			"actionType", string(message.ActionType),
+			"operator", message.OperatorCode,
+			"host", baseURL.Host,
+			"success", false,
+			"status", response.StatusCode,
+			"reason", "retryable_status",
+		)
 		return worker.BitsTripDetailsResponse{}, worker.NewRetryableError(fmt.Sprintf("Bits returned HTTP %d", response.StatusCode))
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		slog.Info("Bits HTTP request completed",
+			"actionType", string(message.ActionType),
+			"operator", message.OperatorCode,
+			"host", baseURL.Host,
+			"success", false,
+			"status", response.StatusCode,
+			"reason", "non_success_status",
+		)
 		return worker.BitsTripDetailsResponse{}, fmt.Errorf("Bits returned HTTP %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
+		slog.Info("Bits HTTP request completed",
+			"actionType", string(message.ActionType),
+			"operator", message.OperatorCode,
+			"host", baseURL.Host,
+			"success", false,
+			"reason", "read_body_error",
+		)
 		return worker.BitsTripDetailsResponse{}, worker.NewRetryableError("Bits response could not be read")
 	}
+	slog.Info("Bits HTTP request completed",
+		"actionType", string(message.ActionType),
+		"operator", message.OperatorCode,
+		"host", baseURL.Host,
+		"success", true,
+		"status", response.StatusCode,
+		"responseBytes", len(body),
+		"responseBody", truncateForLog(body, maxBitsBodyLog),
+	)
 	return worker.BitsTripDetailsResponse{Body: append([]byte(nil), body...)}, nil
+}
+
+// maxBitsBodyLog bounds how much of a BITS response body is written to the log,
+// so a large payload cannot flood the log file. The response is trip data, not
+// a secret, so logging a bounded prefix is safe and useful for debugging.
+const maxBitsBodyLog = 4096
+
+// truncateForLog returns body as a string, trimmed to max bytes with a marker
+// so the log stays bounded.
+func truncateForLog(body []byte, max int) string {
+	if len(body) <= max {
+		return string(body)
+	}
+	return string(body[:max]) + "...(truncated)"
+}
+
+// redactBitsPath returns the BITS request path with the secret segments
+// (username and apiToken) replaced by "***", so the log shows which route was
+// called without ever writing credentials. It never returns the raw path when
+// the secrets could not be located, to avoid leaking them by accident.
+func redactBitsPath(requestURL *url.URL, credential worker.BitsOperatorCredential) string {
+	path := requestURL.EscapedPath()
+	if credential.Username != "" {
+		path = strings.ReplaceAll(path, url.PathEscape(credential.Username), "***")
+	}
+	if credential.APIToken != "" {
+		path = strings.ReplaceAll(path, url.PathEscape(credential.APIToken), "***")
+	}
+	return path
 }
 
 func bitsRequestURL(baseURL *url.URL, message domain.TripDetailsRefreshMessage, credential worker.BitsOperatorCredential) (*url.URL, error) {

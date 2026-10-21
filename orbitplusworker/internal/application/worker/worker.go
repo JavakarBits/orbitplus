@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,7 +120,7 @@ func (worker *TripDetailsRefreshWorker) Handle(ctx context.Context, delivery Rab
 func (worker *TripDetailsRefreshWorker) processOnce(ctx context.Context, message domain.TripDetailsRefreshMessage) (ExecutionStatus, string, OrbitPlusStatus, bool) {
 	credential, err := worker.resolveCredential(ctx, message)
 	if err != nil {
-		return ExecutionCredentialError, "Orbit operator credential could not be resolved.", "", IsRetryableError(err)
+		return ExecutionCredentialError, "Operator credential could not be resolved from the Master.", "", IsRetryableError(err)
 	}
 	// Verify that OrbitPlus is reachable before making the expensive Bits
 	// call. If OrbitPlus is down the Bits result could never be delivered,
@@ -128,6 +130,12 @@ func (worker *TripDetailsRefreshWorker) processOnce(ctx context.Context, message
 	}
 	sourceResult, err := worker.fetchTripDetails(ctx, message, credential)
 	if err != nil {
+		// A BITS failure may be caused by a stale/rotated credential. Drop the
+		// cached copy so the next attempt re-pings the Master for a fresh one.
+		// This is a no-op when the credential client is not a cache.
+		if invalidator, ok := worker.credentialClient.(CredentialInvalidator); ok {
+			invalidator.Invalidate(message.OperatorCode)
+		}
 		return ExecutionSourceError, "Bits request failed or returned an empty response.", "", IsRetryableError(err)
 	}
 	orbitPlusStatus, err := worker.pushTripDetails(ctx, message, sourceResult)
@@ -229,24 +237,57 @@ func parseTripDetailsRefreshMessage(delivery RabbitMQDelivery) (domain.TripDetai
 // resolveCredential fetches the operator's Bits credential from OrbitService.
 // Credential values, credential-bearing URLs, and secrets are never logged.
 func (worker *TripDetailsRefreshWorker) resolveCredential(ctx context.Context, message domain.TripDetailsRefreshMessage) (BitsOperatorCredential, error) {
-	slog.Info("Orbit operator credential request started", "actionType", message.ActionType, "operator", message.OperatorCode)
+	slog.Info("operator credential request started", "actionType", message.ActionType, "operator", message.OperatorCode)
 	operatorCredential, err := worker.credentialClient.FetchOperatorCredential(ctx, OperatorCredentialRequest{OperatorCode: message.OperatorCode})
 	if err != nil {
-		slog.Info("Orbit operator credential request completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
+		slog.Info("operator credential request completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", false)
 		return BitsOperatorCredential{}, err
 	}
-	slog.Info("Orbit operator credential request completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", true)
+	slog.Info("operator credential request completed", "actionType", message.ActionType, "operator", message.OperatorCode, "success", true)
 
+	// The BITS zone URL varies per operator, so the operator-specific zone URL
+	// the Master resolved and stored with the credential is authoritative. The
+	// job message's zoneURL is only a fallback for when the stored value is
+	// empty (e.g. an operator registered before credential storage existed).
+	baseURL := strings.TrimSpace(operatorCredential.ZoneURL)
+	zoneSource := "master"
+	if baseURL == "" {
+		baseURL = message.ZoneURL
+		zoneSource = "message"
+	}
+	// Log the resolved BITS target (host only) and where the zone URL came
+	// from, so the credential->BITS routing is traceable. Secrets (username,
+	// apiToken) and the full credential-bearing URL are deliberately omitted.
+	slog.Info("operator credential resolved",
+		"actionType", message.ActionType,
+		"operator", message.OperatorCode,
+		"bitsHost", bitsHostFromURL(baseURL),
+		"zoneSource", zoneSource,
+	)
 	credential := BitsOperatorCredential{
 		OperatorCode: message.OperatorCode,
 		Username:     operatorCredential.Username,
 		APIToken:     operatorCredential.APIToken,
-		BaseURL:      message.ZoneURL,
+		BaseURL:      baseURL,
 	}
 	if err := credential.Validate(message.OperatorCode); err != nil {
 		return BitsOperatorCredential{}, err
 	}
 	return credential, nil
+}
+
+// bitsHostFromURL returns just the host (and scheme) of a BITS base URL for
+// logging, so a credential-bearing URL is never written to the log. On a parse
+// failure it returns a safe placeholder rather than the raw value.
+func bitsHostFromURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return "unknown"
+	}
+	if parsed.Scheme == "" {
+		return parsed.Host
+	}
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 // checkOrbitPlusHealth verifies that OrbitPlus is reachable before the worker

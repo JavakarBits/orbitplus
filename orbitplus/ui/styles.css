@@ -290,3 +290,21 @@ td { padding: 18px 16px; border-bottom: 1px solid var(--line); }
 .hourly-axis-label { fill: #667085; font-family: Inter, "Segoe UI", Arial, sans-serif; font-size: 10px; }
 .queue-chart-fill.operator { background: linear-gradient(90deg, #5b88e8, #213a6b); }
 .queue-operator-bars { display: grid; gap: 11px; }
+
+
+/* Cache freshness page: 4-up metric grid and clickable tier cards. */
+.metric-grid-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.metric-card[role="button"] { cursor: pointer; transition: border-color .14s ease, box-shadow .14s ease; }
+.metric-card[role="button"]:hover { border-color: var(--blue); box-shadow: 0 7px 20px rgba(33, 58, 107, .10); }
+.metric-card[role="button"]:focus-visible { outline: 3px solid var(--blue-soft); outline-offset: 2px; }
+.metric-warning strong { color: #b54708; }
+@media (max-width: 900px) { .metric-grid-four { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .metric-grid-four { grid-template-columns: repeat(2, 1fr); } }
+
+
+/* CQL query page. */
+.cql-panel { margin-bottom: 18px; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 1px 2px rgba(16, 24, 40, .03); }
+.cql-input { width: 100%; min-height: 96px; padding: 12px; border: 1px solid #cfd5df; border-radius: 8px; background: var(--surface); color: var(--ink); font: .85rem/1.5 Consolas, "Courier New", monospace; resize: vertical; }
+.cql-input:focus { outline: 3px solid var(--blue-soft); border-color: var(--blue); }
+.cql-actions { display: flex; align-items: center; gap: 14px; margin-top: 12px; }
+.cql-actions .secondary-button { cursor: pointer; }
